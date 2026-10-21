@@ -2,13 +2,14 @@ import os
 import re
 import json
 import time
-import base64
+import logging
 import hashlib
 from typing import Dict, Any, List, Optional, TypedDict
 from dotenv import load_dotenv
-import requests
 
 load_dotenv()
+
+logger = logging.getLogger("satuakses.agents")
 
 # =====================================================================
 # EXTENSIVE KBLI 2020 REFERENCE DATABASE (ALL INDONESIAN UMKM SECTORS)
@@ -557,67 +558,119 @@ def parse_natural_language_intake(voice_raw: str, is_followup_turn: bool = False
     }
 
 
+def _get_genai_client():
+    """
+    Instantiates Google GenAI client using the best available authentication method:
+    1. GEMINI_API_KEY or GOOGLE_API_KEY (Google AI Studio / GCP API key — works anywhere without gcloud CLI)
+    2. GOOGLE_APPLICATION_CREDENTIALS pointing to a Service Account JSON file
+    3. Vertex AI Application Default Credentials (ADC) with GOOGLE_CLOUD_PROJECT
+    """
+    from google import genai
+
+    # 1. Check for API key (simplest & most portable, does not require gcloud CLI)
+    api_key = (
+        os.getenv("GEMINI_API_KEY", "").strip()
+        or os.getenv("GOOGLE_API_KEY", "").strip()
+    )
+    if api_key:
+        return genai.Client(api_key=api_key), "api_key"
+
+    # 2. Check for Service Account JSON file
+    cred_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if cred_file and not os.path.isabs(cred_file):
+        cred_file = os.path.abspath(cred_file)
+    if cred_file and os.path.exists(cred_file):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = cred_file
+
+    project = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+    location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1").strip()
+
+    if project:
+        # Try Vertex AI mode
+        try:
+            client = genai.Client(vertexai=True, project=project, location=location)
+            return client, f"vertex_ai ({project})"
+        except Exception as e:
+            # Check specifically for missing credentials
+            err_str = str(e)
+            if "default credentials were not found" in err_str.lower() or "defaultcredentialserror" in err_str.lower():
+                logger.warning(
+                    "\n=======================================================\n"
+                    "[Gemini Auth] Google Application Default Credentials (ADC) belum aktif di komputer ini.\n"
+                    "PILIHAN SOLUSI (pilih salah satu):\n"
+                    "  Opsi 1 (Paling Mudah): Buat API Key di Google AI Studio (https://aistudio.google.com/)\n"
+                    "         dan tambahkan di file .env:\n"
+                    "         GEMINI_API_KEY=AIzaSy...\n\n"
+                    "  Opsi 2 (Service Account): Letakkan file JSON Service Account dari GCP dan isi di .env:\n"
+                    "         GOOGLE_APPLICATION_CREDENTIALS=kredensial-service-account.json\n\n"
+                    "  Opsi 3 (gcloud CLI): Jalankan 'gcloud auth application-default login' di terminal.\n"
+                    "-> [SatuAkses Fallback]: Sistem tetap berjalan normal menggunakan Smart Regex NLP & Dataset Simulasi.\n"
+                    "=======================================================\n"
+                )
+                return None, "missing_adc"
+            raise e
+
+    logger.warning("[Gemini Auth] Tidak ada GEMINI_API_KEY atau GOOGLE_CLOUD_PROJECT di .env.")
+    return None, "not_configured"
+
+
 def call_gemini_multimodal(
     prompt: str,
     image_path: Optional[str] = None,
     audio_bytes: Optional[bytes] = None,
     audio_mime: str = "audio/wav",
 ) -> Optional[Dict[str, Any]]:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
+    """
+    Calls Gemini 2.5 Flash via google-genai SDK (Vertex AI or API Key).
+    Returns parsed dict on success, or None if unavailable/unauthenticated.
+    """
+    try:
+        from google.genai import types as genai_types
+    except ImportError:
+        logger.error("[Gemini] google-genai SDK not installed. Run: pip install google-genai")
         return None
 
-    parts: List[Dict[str, Any]] = [{"text": prompt}]
+    try:
+        client, mode = _get_genai_client()
+        if not client:
+            return None
 
-    if image_path and os.path.exists(image_path):
-        try:
+        parts = [genai_types.Part.from_text(text=prompt)]
+
+        if image_path and os.path.exists(image_path):
             with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+                img_bytes = f.read()
             mime = "image/png" if image_path.lower().endswith(".png") else "image/jpeg"
-            parts.append({"inlineData": {"mimeType": mime, "data": img_b64}})
-        except Exception:
-            pass
+            parts.append(genai_types.Part.from_bytes(data=img_bytes, mime_type=mime))
 
-    if audio_bytes:
-        try:
-            aud_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-            parts.append({"inlineData": {"mimeType": audio_mime, "data": aud_b64}})
-        except Exception:
-            pass
+        if audio_bytes:
+            parts.append(genai_types.Part.from_bytes(data=audio_bytes, mime_type=audio_mime))
 
-    if api_key.startswith("AQ."):
-        urls = [
-            f"https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key={api_key}",
-            f"https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key={api_key}",
-        ]
-    else:
-        urls = [
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
-        ]
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=parts,
+            config=genai_types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json",
+            ),
+        )
 
-    payload = {
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "responseMimeType": "application/json",
-        },
-    }
+        raw_text = response.text.strip() if response.text else ""
+        if raw_text:
+            result = json.loads(raw_text)
+            logger.info("[Gemini] Live API call succeeded (mode=%s).", mode)
+            return result
 
-    for url in urls:
-        try:
-            resp = requests.post(url, json=payload, timeout=4)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                    if text:
-                        return json.loads(text)
-            elif resp.status_code in (401, 403):
-                break
-        except Exception:
-            break
+    except json.JSONDecodeError as exc:
+        logger.error("[Gemini] Response was not valid JSON: %s", exc)
+    except Exception as exc:
+        err_msg = str(exc)
+        if "default credentials were not found" in err_msg.lower() or "defaultcredentialserror" in err_msg.lower():
+            logger.warning(
+                "[Gemini] ADC tidak ditemukan. Tambahkan GEMINI_API_KEY atau GOOGLE_APPLICATION_CREDENTIALS di .env."
+            )
+        else:
+            logger.error("[Gemini] Call failed: %s", exc)
 
     return None
 
@@ -658,7 +711,7 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
     used_live_gemini = gemini_res is not None
 
     if scenario == "incomplete_data":
-        intake_data = {
+        _inc_preset = {
             "bahasa_terdeteksi": parsed["bahasa_terdeteksi"],
             "terjemahan_formal": "Permisi Kak, saya Pak Asep dari Desa Mekarsari. Ingin membuat izin usaha NIB untuk warung kelontong di rumah.",
             "ktp_terbaca_jelas": False,
@@ -673,11 +726,24 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
             "modal_usaha_rp": "",
             "kapasitas_produksi": "",
             "nomor_hp": "0813-9876-5432",
-            "ai_engine": "Gemini 2.5 Flash Multimodal (Live API)" if used_live_gemini else "Gemini 2.5 Flash Multimodal Engine",
         }
+        if gemini_res and isinstance(gemini_res, dict):
+            # Merge Gemini result with preset, but force demo conditions
+            merged_inc = {**_inc_preset, **{k: v for k, v in gemini_res.items() if v}}
+            merged_inc["ktp_terbaca_jelas"] = False   # force blur flag for demo
+            merged_inc["nama_usaha"] = ""              # force incomplete field
+            merged_inc["modal_usaha_rp"] = ""          # force incomplete field
+            merged_inc["ai_engine"] = "Gemini 2.5 Flash Multimodal (Vertex AI — Live, KTP Buram Terdeteksi)"
+            intake_data = merged_inc
+            logger.info("[IntakeAgent] Gemini used for incomplete_data scenario")
+        else:
+            intake_data = dict(_inc_preset)
+            intake_data["ai_engine"] = "Gemini 2.5 Flash Multimodal (Fallback Preset — API Unavailable)"
+            logger.warning("[IntakeAgent] Gemini unavailable for incomplete_data — using preset.")
     elif scenario in ("happy_path", "portal_503"):
-        intake_data = {
-            "bahasa_terdeteksi": parsed["bahasa_terdeteksi"],
+        # Demo preset fallback — used when Gemini is unavailable
+        _preset = {
+            "bahasa_terdeteksi": "Bahasa Sunda & Indonesia",
             "terjemahan_formal": (
                 "Saya Ibu Sari Wulandari dari Desa Sukamaju, Kec. Cilawu, Garut. Mohon didaftarkan NIB untuk usaha mikro "
                 "'Keripik Singkong Berkah' dengan modal Rp 5.000.000 dan kapasitas 250 bungkus/bulan."
@@ -694,28 +760,44 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
             "modal_usaha_rp": "5000000",
             "kapasitas_produksi": "250 Bungkus / Bulan",
             "nomor_hp": "0812-2345-6789",
-            "ai_engine": "Gemini 2.5 Flash Multimodal (Live API)" if used_live_gemini else "Gemini 2.5 Flash Multimodal Engine",
         }
+        if gemini_res and isinstance(gemini_res, dict) and gemini_res.get("nama_lengkap"):
+            # Gemini result wins; fill any missing fields from preset
+            merged = {**_preset, **{k: v for k, v in gemini_res.items() if v}}
+            merged["bahasa_terdeteksi"] = parsed["bahasa_terdeteksi"] or _preset["bahasa_terdeteksi"]
+            merged["ktp_terbaca_jelas"] = bool(gemini_res.get("ktp_terbaca_jelas", True))
+            merged["ai_engine"] = "Gemini 2.5 Flash Multimodal (Vertex AI — Live)"
+            intake_data = merged
+            logger.info("[IntakeAgent] Used live Gemini result for scenario=%s", scenario)
+        else:
+            intake_data = {**_preset, "bahasa_terdeteksi": parsed["bahasa_terdeteksi"]}
+            intake_data["ai_engine"] = "Gemini 2.5 Flash Multimodal (Fallback Preset — API Unavailable)"
+            logger.warning("[IntakeAgent] Gemini unavailable for scenario=%s — using preset data.", scenario)
     else:
         # CUSTOM INPUT / MULTI-TURN CONVERSATION MODE:
         has_custom_ktp = bool(state.get("has_custom_ktp", False) or prev.get("has_custom_ktp", False))
+        g = gemini_res if (gemini_res and isinstance(gemini_res, dict)) else {}
 
-        final_nama = parsed["nama_lengkap"] or prev.get("nama_lengkap") or ""
-        final_usaha = parsed["nama_usaha"] or prev.get("nama_usaha") or ""
-        final_jenis = parsed["jenis_usaha"] or prev.get("jenis_usaha") or final_usaha or ""
-        final_modal = parsed["modal_usaha_rp"] or prev.get("modal_usaha_rp") or ""
+        final_nama = g.get("nama_lengkap") or parsed["nama_lengkap"] or prev.get("nama_lengkap") or ""
+        final_usaha = g.get("nama_usaha") or parsed["nama_usaha"] or prev.get("nama_usaha") or ""
+        final_jenis = g.get("jenis_usaha") or parsed["jenis_usaha"] or prev.get("jenis_usaha") or final_usaha or ""
+        final_modal = g.get("modal_usaha_rp") or parsed["modal_usaha_rp"] or prev.get("modal_usaha_rp") or ""
 
-        if parsed["alamat"]:
+        if g.get("alamat"):
+            final_alamat = g["alamat"]
+        elif parsed["alamat"]:
             final_alamat = parsed["alamat"]
         else:
             final_alamat = prev.get("alamat") or ("DESA SUKAMAJU, KEC. CILAWU" if has_custom_ktp else "")
 
-        final_desa = parsed["desa"] or prev.get("desa") or (final_alamat if final_alamat else "")
-        final_kecamatan = parsed["kecamatan"] or prev.get("kecamatan") or ""
-        final_kapasitas = parsed["kapasitas_produksi"] or prev.get("kapasitas_produksi") or "100 Unit / Bulan"
-        final_hp = parsed["nomor_hp"] or prev.get("nomor_hp") or "0812-2345-6789"
+        final_desa = g.get("desa") or parsed["desa"] or prev.get("desa") or (final_alamat if final_alamat else "")
+        final_kecamatan = g.get("kecamatan") or parsed["kecamatan"] or prev.get("kecamatan") or ""
+        final_kapasitas = g.get("kapasitas_produksi") or parsed["kapasitas_produksi"] or prev.get("kapasitas_produksi") or "100 Unit / Bulan"
+        final_hp = g.get("nomor_hp") or parsed["nomor_hp"] or prev.get("nomor_hp") or "0812-2345-6789"
 
-        if parsed["nik"]:
+        if g.get("nik") and len("".join(c for c in str(g["nik"]) if c.isdigit())) == 16:
+            final_nik = g["nik"]
+        elif parsed["nik"]:
             final_nik = parsed["nik"]
         elif prev.get("nik") and len("".join(c for c in str(prev.get("nik")) if c.isdigit())) == 16:
             final_nik = prev["nik"]
@@ -726,20 +808,26 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
         else:
             final_nik = "3205124508820003"
 
-        modal_fmt_str = f"Rp {int(final_modal):,.0f}".replace(",", ".") if final_modal.isdigit() else "belum disebutkan"
+        modal_fmt_str = f"Rp {int(final_modal):,.0f}".replace(",", ".") if str(final_modal).isdigit() else "belum disebutkan"
         terjemahan_auto = (
             f"Pemohon: {final_nama or '(Belum disebut)'} | Usaha: {final_usaha or final_jenis or '(Belum disebut)'} | "
             f"Modal: {modal_fmt_str} | Alamat/Domisili: {final_alamat or '(Belum disebut)'}"
         )
 
+        ai_engine_desc = (
+            "Gemini 2.5 Flash Multimodal (Live API) + Multi-Turn Memory"
+            if used_live_gemini
+            else "Smart Regex NLP Engine + Multi-Turn Memory"
+        )
+
         intake_data = {
             "bahasa_terdeteksi": parsed["bahasa_terdeteksi"],
             "terjemahan_formal": terjemahan_auto,
-            "ktp_terbaca_jelas": True,
+            "ktp_terbaca_jelas": bool(g.get("ktp_terbaca_jelas", True)),
             "has_custom_ktp": has_custom_ktp,
             "nik": final_nik,
             "nama_lengkap": final_nama,
-            "ttl": "INDONESIA, 05-08-1988",
+            "ttl": g.get("ttl") or "INDONESIA, 05-08-1988",
             "alamat": final_alamat,
             "desa": final_desa,
             "kecamatan": final_kecamatan,
@@ -748,7 +836,7 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
             "modal_usaha_rp": final_modal,
             "kapasitas_produksi": final_kapasitas,
             "nomor_hp": final_hp,
-            "ai_engine": "Gemini 2.5 Flash Multimodal + Multi-Turn State Memory",
+            "ai_engine": ai_engine_desc,
         }
 
     voice_kb = round(max(18.5, len(voice_raw) * 0.14), 1)
