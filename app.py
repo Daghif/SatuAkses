@@ -45,15 +45,17 @@ else:
 os.makedirs("static/samples", exist_ok=True)
 os.makedirs("static/screenshots", exist_ok=True)
 os.makedirs("static/uploads", exist_ok=True)
+os.makedirs("static/dist/assets", exist_ok=True)
 ensure_sample_assets("static/samples")
 
 app = FastAPI(
     title="SatuAkses — Multi-Agent Web-Bridge",
     description="Jembatan Layanan Portal Web via Suara Bahasa Daerah & Foto KTP di WhatsApp Hemat Kuota (Agentic AI Hackathon ITB 2026)",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/assets", StaticFiles(directory="static/dist/assets"), name="assets")
 
 # In-memory state store for active sessions (LangGraph checkpoint memory)
 SESSIONS: Dict[str, AgentState] = {}
@@ -62,6 +64,10 @@ PORTAL_SUBMISSIONS: List[Dict[str, Any]] = []
 
 @app.get("/", response_class=HTMLResponse)
 async def index_page():
+    dist_index = os.path.join("static", "dist", "index.html")
+    if os.path.exists(dist_index):
+        with open(dist_index, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
     with open("templates/index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read())
 
@@ -129,8 +135,12 @@ async def api_intake_and_plan(
         )
 
     existing_state = SESSIONS.get(session_id, {})
-    prev_intake = existing_state.get("intake_result", {}) if scenario_mode == "custom" else {}
-    prev_logs = existing_state.get("trace_logs", []) if scenario_mode == "custom" else []
+    keep_memory = scenario_mode in ("custom", "catat_kas", "konsultasi_usaha")
+    prev_intake = existing_state.get("intake_result", {}) if keep_memory else {}
+    prev_logs = existing_state.get("trace_logs", []) if keep_memory else []
+    prev_ledger = existing_state.get("cashflow_ledger", []) if keep_memory else []
+    prev_summary = existing_state.get("cashflow_summary", {}) if keep_memory else {}
+    prev_consult = existing_state.get("consultation_result", {}) if keep_memory else {}
 
     initial_state: AgentState = {
         "session_id": session_id,
@@ -139,6 +149,9 @@ async def api_intake_and_plan(
         "ktp_image_path": ktp_path,
         "has_custom_ktp": has_custom_ktp,
         "previous_intake": prev_intake,
+        "cashflow_ledger": prev_ledger,
+        "cashflow_summary": prev_summary,
+        "consultation_result": prev_consult,
         "simulate_503": simulate_503.lower() == "true",
         "headless": _ENV_HEADLESS,
         "trace_logs": prev_logs,

@@ -1,0 +1,14 @@
+.gcloudignore
+.git
+.gitignore
+.env
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+test_*.py
+output_screenshots
+frontend/node_modules
+node_modules

@@ -7,3 +7,5 @@ __pycache__
 .gitignore
 test_*.py
 output_screenshots
+frontend/node_modules
+node_modules

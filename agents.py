@@ -254,6 +254,7 @@ def lookup_kbli_tool(business_description: str) -> Dict[str, str]:
 class AgentState(TypedDict, total=False):
     session_id: str
     scenario_mode: str
+    intent_mode: str
     voice_text_raw: str
     ktp_image_path: str
     has_custom_ktp: bool
@@ -266,6 +267,9 @@ class AgentState(TypedDict, total=False):
     status: str
     whatsapp_reply: str
     action_result: Dict[str, Any]
+    cashflow_ledger: List[Dict[str, Any]]
+    cashflow_summary: Dict[str, Any]
+    consultation_result: Dict[str, Any]
     trace_logs: List[Dict[str, Any]]
 
 
@@ -1225,7 +1229,765 @@ def run_action_agent(state: AgentState, base_url: str = "http://127.0.0.1:8000")
     return state
 
 
+# =====================================================================
+# HITUNGUANG-INSPIRED UMKM CASHFLOW ENGINE & AI BUSINESS ADVISOR
+# (Terintegrasi Tanpa Fonnte — Langsung di Orchestrator SatuAkses)
+# =====================================================================
+
+CURRENCY_TOKEN_RE = re.compile(
+    r"(?:rp\.?\s*)?(\d+(?:[.,]\d+)*)\s*(rb|ribu|rebu|k|jt|juta|jeti|miliar|milyar|rupiah)?\b",
+    flags=re.IGNORECASE,
+)
+
+CURRENCY_MULTIPLIERS = {
+    "rb": 1_000,
+    "ribu": 1_000,
+    "rebu": 1_000,
+    "k": 1_000,
+    "jt": 1_000_000,
+    "juta": 1_000_000,
+    "jeti": 1_000_000,
+    "miliar": 1_000_000_000,
+    "milyar": 1_000_000_000,
+    "rupiah": 1,
+}
+
+UMKM_EXPENSE_CATEGORIES = [
+    ("bahan_baku", ["minyak", "singkong", "tepung", "gula", "bumbu", "cabai", "cabe", "ayam", "daging", "ikan", "lele", "pakan", "bibit", "kopi", "susu", "telur", "beras", "bahan", "kelapa", "garam", "bawang", "kain", "benang"]),
+    ("kemasan", ["plastik", "kemasan", "stiker", "label", "kardus", "box", "botol", "cup", "standing pouch", "pouch", "karung", "kresek", "seal"]),
+    ("operasional", ["gas", "elpiji", "lpg", "listrik", "token", "air", "kuota", "pulsa", "wifi", "sewa", "kontrakan", "kios", "upah", "gaji", "karyawan", "sabun"]),
+    ("transport", ["bensin", "pertalite", "solar", "ongkir", "ojek", "kurir", "angkut", "parkir", "transport", "kirim"]),
+]
+
+UMKM_INCOME_KEYWORDS = [
+    "laku", "payu", "terjual", "jual", "jualan", "omset", "omzet", "pemasukan",
+    "pendapatan", "dapat", "dapet", "masuk", "orderan", "pesanan", "borongan",
+    "terima", "cair", "untung", "setoran",
+]
+
+UMKM_EXPENSE_KEYWORDS = [
+    "beli", "meser", "tumbas", "kulakan", "belanja", "bayar", "biaya",
+    "pengeluaran", "keluar", "habis", "modal bahan", "isi", "topup",
+]
+
+UMKM_SAVING_KEYWORDS = [
+    "nabung", "menabung", "tabung", "tabungan", "sisihkan", "simpan", "dana darurat", "celengan",
+]
+
+CONSULTATION_KEYWORDS = [
+    "konsultasi", "saran", "tips", "strategi", "hpp", "harga pokok", "harga jual",
+    "gimana cara", "bagaimana cara", "kumaha cara", "piye carane", "biar laku",
+    "biar laris", "promosi", "marketing", "untung tipis", "rugi", "sepi",
+    "pinjaman", "kur", "modal tambahan", "sertifikat halal", "halal", "pirt", "bpom",
+    "naikin omset", "naikin penjualan", "bikin status",
+]
+
+CASHFLOW_QUERY_KEYWORDS = [
+    "rekap kas", "laporan kas", "buku kas", "cek saldo", "total pemasukan",
+    "total pengeluaran", "untung hari ini", "rekap keuangan", "ringkasan kas",
+    "rekap", "cek kas", "saldo kas", "laba rugi", "untung berapa", "omset berapa",
+    "ringkasan buku kas", "lihat kas", "laporan keuangan",
+]
+
+
+def parse_currency_amount_id(raw_str: str) -> int:
+    """
+    Ported & enhanced from HitungUang currencyNormalizer.js:
+    Converts strings like '15rb', '350 ribu', '1,5jt', 'Rp 45.000', '50k',
+    and compound expressions like '2jt 500rb' or '2 juta 500 ribu' into integer Rupiah.
+    """
+    text = str(raw_str or "").strip().lower()
+    if not text:
+        return 0
+
+    # Handle compound patterns like '2jt 500rb' or '2 juta 500 ribu'
+    compound_m = re.search(r"(\d+)\s*(?:jt|juta|jeti)\s*(\d+)\s*(?:rb|ribu|rebu|k)?\b", text)
+    if compound_m:
+        juta_part = int(compound_m.group(1)) * 1_000_000
+        rb_num = int(compound_m.group(2))
+        if rb_num < 1000:
+            rb_num *= 1000
+        return juta_part + rb_num
+
+    m = CURRENCY_TOKEN_RE.search(text)
+    if not m:
+        digits = re.sub(r"[^\d]", "", text)
+        return int(digits) if digits else 0
+
+    num_part = m.group(1)
+    suffix = (m.group(2) or "").lower().strip()
+    mult = CURRENCY_MULTIPLIERS.get(suffix, 1)
+
+    if mult > 1:
+        # Handle decimal comma/dot with multiplier, e.g. '1,5jt' or '2.5rb'
+        if "," in num_part and "." not in num_part:
+            val = float(num_part.replace(",", "."))
+        elif "." in num_part and "," not in num_part:
+            if re.match(r"^\d{1,3}(?:\.\d{3})+$", num_part):
+                val = float(num_part.replace(".", ""))
+            else:
+                val = float(num_part)
+        else:
+            val = float(num_part.replace(".", "").replace(",", "."))
+        return int(round(val * mult))
+    else:
+        digits = re.sub(r"[^\d]", "", num_part)
+        return int(digits) if digits else 0
+
+
+def classify_user_intent(
+    text: str,
+    scenario_mode: str = "happy_path",
+    has_pending_nib_slot: bool = False,
+) -> str:
+    """
+    Router Agent (Intent Classifier):
+    Distinguishes between:
+    1. 'nib_registration' — Pengurusan NIB / Legalitas Portal
+    2. 'cashflow_record'  — Pencatatan Pemasukan/Pengeluaran/Tabungan Usaha (Buku Kas Suara)
+    3. 'cashflow_query'   — Permintaan Rekap / Ringkasan Buku Kas
+    4. 'business_consultation' — Konsultasi Bisnis, HPP, Strategi Pemasaran, Halal/KUR
+    """
+    if scenario_mode in ("happy_path", "incomplete_data", "portal_503"):
+        return "nib_registration"
+    if scenario_mode == "catat_kas":
+        return "cashflow_record"
+    if scenario_mode == "konsultasi_usaha":
+        return "business_consultation"
+
+    t_low = (text or "").lower().strip()
+    if not t_low:
+        return "nib_registration"
+
+    # Explicit NIB keywords always route to NIB registration
+    if any(k in t_low for k in ["daftar nib", "bikin nib", "izin usaha nib", "urus nib", "nomor induk berusaha", "nik saya"]):
+        return "nib_registration"
+
+    # If user is in the middle of completing missing NIB slots (and not explicitly asking consultation/cashflow)
+    if has_pending_nib_slot and any(k in t_low for k in ["desa", "kecamatan", "jl.", "jalan", "nama saya", "nama usaha", "modal usaha", "3205"]):
+        return "nib_registration"
+
+    # Check Cashflow Query intent
+    if any(k in t_low for k in CASHFLOW_QUERY_KEYWORDS):
+        return "cashflow_query"
+
+    # Check Business Consultation intent
+    if any(k in t_low for k in CONSULTATION_KEYWORDS):
+        return "business_consultation"
+
+    # Check Cashflow Record intent (has transaction keywords + currency amount)
+    has_tx_kw = any(k in t_low for k in UMKM_INCOME_KEYWORDS + UMKM_EXPENSE_KEYWORDS + UMKM_SAVING_KEYWORDS + ["catat kas", "catat uang"])
+    has_money = bool(re.search(r"\b\d+(?:[.,]\d+)?\s*(?:rb|ribu|rebu|k|jt|juta)\b|\brp\.?\s*\d+", t_low))
+    if has_tx_kw and has_money and "daftar" not in t_low and "bikin usaha" not in t_low and "buka usaha" not in t_low:
+        return "cashflow_record"
+
+    # Question starter about business without NIB keywords
+    if any(t_low.startswith(q) for q in ["gimana", "bagaimana", "kumaha", "kenapa", "berapa harga", "cara "]):
+        return "business_consultation"
+
+    return "nib_registration"
+
+
+def _classify_single_clause_transaction(clause: str) -> Optional[Dict[str, Any]]:
+    """Extracts a single transaction dict from a clause containing an amount."""
+    c_clean = clause.strip(" ,.;:-")
+    if not c_clean:
+        return None
+
+    c_low = c_clean.lower()
+
+    # Find currency token with unit or Rp prefix (including compound like 2jt 500rb)
+    money_matches = list(
+        re.finditer(
+            r"(?:rp\.?\s*\d+(?:[.,]\d+)*|\b\d+\s*(?:jt|juta|jeti)\s*\d+\s*(?:rb|ribu|rebu|k)?\b|\b\d+(?:[.,]\d+)?\s*(?:rb|ribu|rebu|k|jt|juta|jeti|miliar|milyar|rupiah)\b|\b\d{4,9}\b)",
+            c_clean,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not money_matches:
+        return None
+
+    # Use the last money match in the clause (usually the price, e.g. 'laku 35 bungkus 350rb')
+    target_match = money_matches[-1]
+    raw_token = target_match.group(0)
+    harga = parse_currency_amount_id(raw_token)
+    if harga < 500:
+        return None
+
+    # Determine transaction type (pemasukan, pengeluaran, tabungan)
+    is_saving = any(k in c_low for k in UMKM_SAVING_KEYWORDS)
+    if is_saving and any(gas in c_low for gas in ["tabung gas", "tabung elpiji", "tabung lpg", "tabung oksigen"]):
+        is_saving = False
+
+    if is_saving:
+        tipe = "tabungan"
+        kategori = "tabungan_usaha"
+    elif any(k in c_low for k in UMKM_EXPENSE_KEYWORDS):
+        tipe = "pengeluaran"
+        kategori = "operasional"
+        for cat_name, kws in UMKM_EXPENSE_CATEGORIES:
+            if any(kw in c_low for kw in kws):
+                kategori = cat_name
+                break
+    elif any(k in c_low for k in UMKM_INCOME_KEYWORDS):
+        tipe = "pemasukan"
+        kategori = "penjualan_produk"
+    else:
+        # Infer from item keywords
+        is_exp_item = any(any(kw in c_low for kw in kws) for _, kws in UMKM_EXPENSE_CATEGORIES)
+        if is_exp_item:
+            tipe = "pengeluaran"
+            kategori = "bahan_baku"
+            for cat_name, kws in UMKM_EXPENSE_CATEGORIES:
+                if any(kw in c_low for kw in kws):
+                    kategori = cat_name
+                    break
+        else:
+            tipe = "pemasukan"
+            kategori = "penjualan_produk"
+
+    # Clean item description
+    desc_part = (c_clean[:target_match.start()] + " " + c_clean[target_match.end():]).strip()
+    desc_part = re.sub(
+        r"\b(?:alhamdulillah|dinten\s*ieu|hari\s*ini|tadi|barusan|terus|lanjut|sama|sareng|jeung|lan|catat\s*kas|catat|dulu|dong|dapet|dapat|sebesar|senilai|seharga)\b",
+        " ",
+        desc_part,
+        flags=re.IGNORECASE,
+    )
+    desc_part = re.sub(
+        r"^\s*(?:beli|meser|tumbas|bayar|kulakan|belanja|nabung|menabung|sisihkan|simpan|laku|payu|terjual|penjualan|pemasukan|pengeluaran)\s*",
+        "",
+        desc_part,
+        flags=re.IGNORECASE,
+    )
+    desc_part = re.sub(r"\s+", " ", desc_part).strip(" ,.-:")
+
+    # Clean isolated action verbs
+    if desc_part.lower() in ("laku", "payu", "terjual", "jual", "beli", "meser", "tumbas", "bayar", "biaya", "pengeluaran", "pemasukan", "omset", "omzet", "uang masuk", "uang keluar", "nabung", "menabung", "dulu", "dong", ""):
+        desc_part = ""
+
+    if not desc_part:
+        if tipe == "pemasukan":
+            desc_part = "Penjualan Produk Usaha"
+        elif tipe == "tabungan":
+            desc_part = "Tabungan Modal Usaha"
+        else:
+            desc_part = f"Pengeluaran {kategori.replace('_', ' ').title()}"
+    else:
+        desc_part = _smart_title_case(desc_part)
+        if tipe == "pemasukan":
+            if desc_part and desc_part[0].isdigit():
+                desc_part = f"Penjualan {desc_part}"
+            elif not any(w in desc_part.lower() for w in ["penjualan", "laku", "payu", "order", "keripik", "surabi", "warung", "produk", "bungkus", "porsi"]):
+                desc_part = f"Penjualan {desc_part}"
+        elif tipe == "tabungan" and "tabungan" not in desc_part.lower() and "modal" not in desc_part.lower():
+            desc_part = f"Tabungan {desc_part}"
+
+    return {
+        "item": desc_part,
+        "harga": harga,
+        "tipe": tipe,
+        "kategori": kategori,
+        "waktu": time.strftime("%H:%M"),
+    }
+
+
+def parse_cashflow_transactions(text: str) -> List[Dict[str, Any]]:
+    """
+    Ported & adapted from HitungUang aiParser.js for SatuAkses UMKM:
+    Extracts one or multiple cashflow transactions (pemasukan, pengeluaran, tabungan)
+    from a single natural-language message or regional-language voice note.
+    """
+    if not text or not text.strip():
+        return []
+
+    # Insert comma after any amount that is followed by a new action verb or conjunction
+    preprocessed = re.sub(
+        r"(\b\d+(?:[.,]\d+)?\s*(?:rb|k|jt|juta|ribu|rebu|rupiah)?)\s+(?=(?:(?:dan|serta|lan|karo)\s+)?(?:beli|meser|tumbas|bayar|kulakan|belanja|laku|payu|terjual|omset|omzet|nabung|menabung|sisihkan|simpan)\b)",
+        r"\1, ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Also handle 'dan/serta' preceded by an amount
+    preprocessed = re.sub(
+        r"(\b\d+(?:[.,]\d+)?\s*(?:rb|k|jt|juta|ribu|rebu|rupiah)?\b)\s+(?:dan|serta|lan|karo)\s+",
+        r"\1, ",
+        preprocessed,
+        flags=re.IGNORECASE,
+    )
+
+    split_pat = (
+        r"(?:[,;\n]+|\b(?:terus|lanjut|sama|sareng|kemudian|lalu)\b|"
+        r"\b(?:dan|serta|lan|karo)\s+(?=(?:beli|meser|tumbas|bayar|kulakan|belanja|laku|payu|terjual|omset|omzet|nabung|menabung|sisihkan|simpan|biaya|ongkir|bensin|minyak|gas|rp|\d)))"
+    )
+    clauses = [
+        c.strip() for c in re.split(split_pat, preprocessed, flags=re.IGNORECASE) if c.strip()
+    ]
+
+    items: List[Dict[str, Any]] = []
+    for clause in clauses:
+        parsed_item = _classify_single_clause_transaction(clause)
+        if parsed_item:
+            items.append(parsed_item)
+
+    return items
+
+
+def compute_cashflow_summary(ledger: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Computes financial metrics & smart alerts for UMKM (inspired by HitungUang dashboard & spendingAlertService).
+    """
+    total_masuk = sum(int(x.get("harga", 0)) for x in ledger if x.get("tipe") == "pemasukan")
+    total_keluar = sum(int(x.get("harga", 0)) for x in ledger if x.get("tipe") == "pengeluaran")
+    total_tabungan = sum(int(x.get("harga", 0)) for x in ledger if x.get("tipe") == "tabungan")
+    laba_bersih = total_masuk - total_keluar
+    kas_tersedia = laba_bersih - total_tabungan
+    margin_pct = round((laba_bersih / total_masuk) * 100, 1) if total_masuk > 0 else 0.0
+    rasio_pengeluaran_pct = round((total_keluar / total_masuk) * 100, 1) if total_masuk > 0 else 0.0
+
+    by_category: Dict[str, int] = {}
+    for x in ledger:
+        cat = x.get("kategori", "lainnya")
+        by_category[cat] = by_category.get(cat, 0) + int(x.get("harga", 0))
+
+    # Smart Alert ala HitungUang spendingAlertService.js
+    if total_masuk > 0 and rasio_pengeluaran_pct >= 80:
+        health_status = "PERLU_PERHATIAN"
+        alert_msg = (
+            f"⚠️ Peringatan Rasio Biaya: Pengeluaran mencapai {rasio_pengeluaran_pct}% dari omset "
+            f"(Margin tipis {margin_pct}%). Cek kembali harga bahan baku atau naikkan harga jual/bundling."
+        )
+    elif laba_bersih < 0:
+        health_status = "DEFISIT_STOK"
+        alert_msg = (
+            "ℹ️ Catatan Kas: Pengeluaran hari ini lebih besar karena belanja stok bahan baku. "
+            "Pastikan stok terjual di hari berikutnya agar arus kas kembali positif."
+        )
+    else:
+        health_status = "SEHAT"
+        alert_msg = (
+            f"✅ Arus Kas Sehat! Margin keuntungan operasional mencapai {margin_pct}% "
+            f"dengan cadangan tabungan modal Rp {total_tabungan:,.0f}.".replace(",", ".")
+        )
+
+    return {
+        "total_transaksi": len(ledger),
+        "total_pemasukan": total_masuk,
+        "total_pengeluaran": total_keluar,
+        "total_tabungan": total_tabungan,
+        "laba_bersih": laba_bersih,
+        "kas_tersedia": kas_tersedia,
+        "margin_persen": margin_pct,
+        "rasio_pengeluaran_persen": rasio_pengeluaran_pct,
+        "kategori_breakdown": by_category,
+        "health_status": health_status,
+        "alert_message": alert_msg,
+    }
+
+
+def run_cashflow_agent(state: AgentState) -> AgentState:
+    """
+    Executes the SatuAkses x HitungUang Cashflow Bookkeeping Agent (Tanpa Fonnte).
+    Processes voice/text bookkeeping entries or cashflow summary queries.
+    """
+    t0 = time.time()
+    voice_raw = (state.get("voice_text_raw") or "").strip()
+    if not voice_raw:
+        voice_raw = (
+            "Alhamdulillah dinten ieu keripik singkong payu 35 bungkus dapet 350rb, "
+            "tadi meser minyak goreng 60rb, singkong mentah 80rb, plastik kemasan 25rb, "
+            "terus nabung modal 50rb."
+        )
+
+    prev_intake = state.get("previous_intake") or state.get("intake_result") or {}
+    nama_pemilik = prev_intake.get("nama_lengkap") or "IBU SARI WULANDARI"
+    nama_usaha = prev_intake.get("nama_usaha") or "Keripik Singkong Berkah"
+    kbli_info = lookup_kbli_tool(f"{nama_usaha} {prev_intake.get('jenis_usaha', '')}")
+
+    existing_ledger = list(state.get("cashflow_ledger") or [])
+    is_query = state.get("intent_mode") == "cashflow_query"
+    new_items: List[Dict[str, Any]] = []
+
+    if is_query:
+        # User is requesting a summary of existing recorded transactions
+        updated_ledger = existing_ledger
+        summary = compute_cashflow_summary(updated_ledger)
+        masuk_fmt = f"Rp {summary['total_pemasukan']:,.0f}".replace(",", ".")
+        keluar_fmt = f"Rp {summary['total_pengeluaran']:,.0f}".replace(",", ".")
+        laba_fmt = f"Rp {summary['laba_bersih']:,.0f}".replace(",", ".")
+        tab_fmt = f"Rp {summary['total_tabungan']:,.0f}".replace(",", ".")
+
+        if not updated_ledger:
+            wa_reply = (
+                f"📊 *BUKU KAS SUARA UMKM — {nama_usaha.upper()}*\n\n"
+                f"Halo *{nama_pemilik}*, belum ada transaksi kas yang dicatat di sesi ini.\n\n"
+                "💡 *Contoh cara mencatat:* Cukup kirim pesan suara atau ketik:\n"
+                "• _\"Laku keripik 20 bungkus 200rb\"_\n"
+                "• _\"Beli minyak goreng 50rb dan plastik 20rb\"_\n"
+                "• _\"Nabung modal usaha 50rb\"_"
+            )
+        else:
+            wa_reply = (
+                f"📊 *REKAP BUKU KAS SAAT INI — {nama_usaha.upper()}*\n"
+                f"Halo *{nama_pemilik}*, berikut posisi keuangan usaha Anda:\n\n"
+                f"• 📈 Total Pemasukan: *{masuk_fmt}*\n"
+                f"• 📉 Total Pengeluaran: *{keluar_fmt}*\n"
+                f"• 💵 *Laba Bersih:* *{laba_fmt}* (Margin *{summary['margin_persen']}%*)\n"
+                f"• 🏦 Tabungan Modal Usaha: *{tab_fmt}*\n\n"
+                f"{summary['alert_message']}\n\n"
+                "💡 Anda bisa terus menambah catatan transaksi atau ketik pertanyaan konsultasi bisnis!"
+            )
+    else:
+        new_items = parse_cashflow_transactions(voice_raw)
+
+        # Try Gemini live extraction if configured and regex found nothing
+        if not new_items:
+            prompt = f"""
+Ekstrak daftar transaksi keuangan UMKM dari kalimat ini: "{voice_raw}"
+Kembalikan JSON dengan format:
+{{"items": [{{"item": "Nama Transaksi", "harga": 50000, "tipe": "pemasukan|pengeluaran|tabungan", "kategori": "penjualan_produk|bahan_baku|kemasan|operasional|transport|tabungan_usaha"}}]}}
+"""
+            gem_res = call_gemini_multimodal(prompt=prompt)
+            if isinstance(gem_res, dict) and isinstance(gem_res.get("items"), list):
+                for it in gem_res["items"]:
+                    if isinstance(it, dict) and it.get("harga"):
+                        new_items.append({
+                            "item": str(it.get("item", "Transaksi Usaha")),
+                            "harga": int(it.get("harga", 0)),
+                            "tipe": str(it.get("tipe", "pengeluaran")),
+                            "kategori": str(it.get("kategori", "operasional")),
+                            "waktu": time.strftime("%H:%M"),
+                        })
+
+        updated_ledger = existing_ledger + new_items
+        summary = compute_cashflow_summary(updated_ledger)
+        masuk_fmt = f"Rp {summary['total_pemasukan']:,.0f}".replace(",", ".")
+        keluar_fmt = f"Rp {summary['total_pengeluaran']:,.0f}".replace(",", ".")
+        laba_fmt = f"Rp {summary['laba_bersih']:,.0f}".replace(",", ".")
+        tab_fmt = f"Rp {summary['total_tabungan']:,.0f}".replace(",", ".")
+
+        if not new_items and not existing_ledger:
+            wa_reply = (
+                f"📊 *BUKU KAS SUARA UMKM — {nama_usaha.upper()}*\n\n"
+                f"Halo *{nama_pemilik}*, catatan transaksi belum terbaca dengan jelas.\n"
+                "Coba gunakan format yang menyebutkan nama barang dan nominal, contoh:\n"
+                "• _\"Laku 25 bungkus keripik 250rb\"_\n"
+                "• _\"Beli minyak goreng 40rb\"_\n"
+                "• _\"Nabung modal 50rb\"_"
+            )
+        else:
+            # Format WhatsApp Reply ala HitungUang natural confirmation
+            lines = [
+                f"📊 *BUKU KAS SUARA UMKM — {nama_usaha.upper()}*",
+                f"Halo *{nama_pemilik}*, catatan transaksi usaha Anda sudah tersimpan otomatis:\n",
+            ]
+            if new_items:
+                lines.append("*Rincian Transaksi Baru:*")
+                for it in new_items:
+                    harga_fmt = f"Rp {int(it['harga']):,.0f}".replace(",", ".")
+                    if it["tipe"] == "pemasukan":
+                        lines.append(f"💰 *Pemasukan* — {it['item']}: *+{harga_fmt}*")
+                    elif it["tipe"] == "tabungan":
+                        lines.append(f"🏦 *Tabungan Modal* — {it['item']}: *{harga_fmt}*")
+                    else:
+                        lines.append(f"💸 *Pengeluaran ({it['kategori']})* — {it['item']}: *-{harga_fmt}*")
+                lines.append("")
+
+            lines.extend([
+                "*Ringkasan Kas Hari Ini:*",
+                f"• 📈 Total Pemasukan (Omset): *{masuk_fmt}*",
+                f"• 📉 Total Pengeluaran Biaya: *{keluar_fmt}*",
+                f"• 💵 *Laba Bersih Operasional:* *{laba_fmt}* (Margin *{summary['margin_persen']}%*)",
+                f"• 🏦 Tabungan Modal Usaha: *{tab_fmt}*",
+                "",
+                f"{summary['alert_message']}",
+                "",
+                "💡 *Ketik atau kirim Voice Note konsultasi* (misal: _\"Gimana cara ngitung HPP & naikin untung?\"_) untuk dianalisis oleh *AI Business Advisor*!",
+            ])
+            wa_reply = "\n".join(lines)
+    elapsed = round(time.time() - t0, 2)
+
+    parsed_lang = parse_natural_language_intake(voice_raw).get("bahasa_terdeteksi", "Bahasa Indonesia & Daerah")
+    intake_card = {
+        **prev_intake,
+        "bahasa_terdeteksi": parsed_lang,
+        "terjemahan_formal": f"Pencatatan Buku Kas UMKM ({len(new_items)} transaksi baru diekstrak dari pesan suara/teks).",
+        "ktp_terbaca_jelas": True,
+        "nik": prev_intake.get("nik") or "3205124508820003",
+        "nama_lengkap": nama_pemilik,
+        "nama_usaha": nama_usaha,
+        "modal_usaha_rp": prev_intake.get("modal_usaha_rp") or "5000000",
+        "ai_engine": "HitungUang NLP Parser + SatuAkses Multi-Agent (Tanpa Fonnte)",
+    }
+
+    planner_card = {
+        "is_complete": True,
+        "missing_fields": [],
+        "kbli_mapping": kbli_info,
+        "human_approval_required": False,
+        "human_approved": True,
+        "execution_plan": [
+            f"1. [ROUTER] Intent terdeteksi: {'REKAP_KAS_UMKM' if is_query else 'CATAT_KAS_UMKM'} ({len(new_items)} item transaksi baru)",
+            f"2. [PARSER] Normalisasi nominal Rupiah & klasifikasi kategori UMKM ({kbli_info['kode']})",
+            f"3. [LEDGER] Laba Bersih: {laba_fmt} | Margin: {summary['margin_persen']}%",
+            "4. [DASHBOARD] Sinkronisasi ke Panel Buku Kas & Memori AI Business Advisor",
+        ],
+    }
+
+    voice_kb = round(max(12.4, len(voice_raw) * 0.12), 1)
+    reply_kb = 3.6
+    total_kb = round(voice_kb + reply_kb, 1)
+    bandwidth_metrics = {
+        "voice_note_kb": voice_kb,
+        "ktp_compressed_kb": 0.0,
+        "wa_text_reply_kb": reply_kb,
+        "total_satuakses_kb": total_kb,
+        "manual_portal_kb": 4380.0,
+        "savings_percent": round((1.0 - (total_kb / 4380.0)) * 100, 1),
+        "estimated_time_2g_satuakses": "1.5 detik",
+        "estimated_time_2g_manual": "6 menit 40 detik (Aplikasi Kasir Berat)",
+    }
+
+    logs = list(state.get("trace_logs") or [])
+    logs.append({
+        "agent": "Cashflow Agent (Buku Kas)",
+        "step": "Ringkasan Buku Kas" if is_query else "Multi-Transaction Extraction & Margin Analysis",
+        "timestamp": time.strftime("%H:%M:%S"),
+        "duration_sec": elapsed,
+        "status": "CASHFLOW_QUERIED" if is_query else "CASHFLOW_RECORDED",
+        "detail": (
+            f"Menampilkan posisi kas terkini: Omset={masuk_fmt}, Biaya={keluar_fmt}, Laba Bersih={laba_fmt} ({summary['margin_persen']}%)."
+            if is_query
+            else f"Mencatat {len(new_items)} transaksi kas. Omset={masuk_fmt}, Biaya={keluar_fmt}, Laba Bersih={laba_fmt} ({summary['margin_persen']}%)."
+        ),
+    })
+
+    state["intent_mode"] = "cashflow_query" if is_query else "cashflow_record"
+    state["voice_text_raw"] = voice_raw
+    state["intake_result"] = intake_card
+    state["planner_result"] = planner_card
+    state["bandwidth_metrics"] = bandwidth_metrics
+    state["cashflow_ledger"] = updated_ledger
+    state["cashflow_summary"] = summary
+    state["status"] = "CASHFLOW_QUERIED" if is_query else "CASHFLOW_UPDATED"
+    state["whatsapp_reply"] = wa_reply
+    state["trace_logs"] = logs
+    return state
+
+
+def run_consultation_agent(state: AgentState) -> AgentState:
+    """
+    Executes the Contextual UMKM Business Advisor Agent (Fitur Konsultasi Usaha).
+    Combines:
+      1. UMKM Legal & KBLI Profile (from NIB registration memory)
+      2. Real-time Cashflow Ledger (from HitungUang-style Buku Kas memory)
+    to deliver actionable HPP calculation, pricing strategy, promotion copywriting, and KUR/Halal roadmap.
+    """
+    t0 = time.time()
+    voice_raw = (state.get("voice_text_raw") or "").strip()
+    if not voice_raw:
+        voice_raw = (
+            "Teh, pengeluaran minyak goreng jeung bahan baku keripik teh naek wae. "
+            "Kumaha cara ngitung HPP per bungkus biar untungna stabil, terus kumaha syarat daftar Halal & modal KUR?"
+        )
+
+    prev_intake = state.get("previous_intake") or state.get("intake_result") or {}
+    nama_pemilik = prev_intake.get("nama_lengkap") or "IBU SARI WULANDARI"
+    nama_usaha = prev_intake.get("nama_usaha") or "Keripik Singkong Berkah"
+    jenis_usaha = prev_intake.get("jenis_usaha") or "Industri Keripik Singkong & Makanan Ringan"
+    modal_usaha = int(prev_intake.get("modal_usaha_rp") or 5000000)
+    kbli_info = lookup_kbli_tool(f"{nama_usaha} {jenis_usaha}")
+
+    # Ensure cashflow summary is available (seed realistic calculation baseline if user hasn't recorded cashflow yet)
+    real_ledger = list(state.get("cashflow_ledger") or [])
+    if not real_ledger:
+        calc_ledger = [
+            {"item": "Penjualan Keripik Singkong 35 Bungkus", "harga": 350000, "tipe": "pemasukan", "kategori": "penjualan_produk", "waktu": "14:10"},
+            {"item": "Minyak Goreng 4 Liter", "harga": 60000, "tipe": "pengeluaran", "kategori": "bahan_baku", "waktu": "09:15"},
+            {"item": "Singkong Mentah & Bumbu", "harga": 80000, "tipe": "pengeluaran", "kategori": "bahan_baku", "waktu": "09:30"},
+            {"item": "Plastik Standing Pouch & Stiker", "harga": 25000, "tipe": "pengeluaran", "kategori": "kemasan", "waktu": "10:00"},
+            {"item": "Tabungan Modal Usaha", "harga": 50000, "tipe": "tabungan", "kategori": "tabungan_usaha", "waktu": "16:00"},
+        ]
+    else:
+        calc_ledger = real_ledger
+    summary = compute_cashflow_summary(calc_ledger)
+
+    # Calculate unit economics (HPP) based on ledger
+    estimasi_unit_harian = 0
+    for it in calc_ledger:
+        if it.get("tipe") == "pemasukan":
+            m_unit = re.search(
+                r"\b(\d+)\s*(?:bungkus|porsi|unit|cup|bks|pcs|kotak|ekor|botol)\b",
+                str(it.get("item", "")),
+                flags=re.IGNORECASE,
+            )
+            if m_unit:
+                estimasi_unit_harian += int(m_unit.group(1))
+
+    if estimasi_unit_harian <= 0:
+        if summary["total_pemasukan"] > 0:
+            estimasi_unit_harian = max(1, round(summary["total_pemasukan"] / 10000))
+        else:
+            estimasi_unit_harian = 35
+
+    hpp_per_unit = round(summary["total_pengeluaran"] / estimasi_unit_harian) if summary["total_pengeluaran"] > 0 else 4700
+    harga_jual_unit = round(summary["total_pemasukan"] / estimasi_unit_harian) if summary["total_pemasukan"] > 0 else max(10000, int(round((hpp_per_unit * 1.5) / 500.0) * 500))
+    untung_per_unit = harga_jual_unit - hpp_per_unit
+    harga_rekomendasi_grosir = max(hpp_per_unit, int(round((hpp_per_unit * 1.65) / 500.0) * 500))
+    harga_rekomendasi_ecer = max(harga_jual_unit, int(round((hpp_per_unit * 2.1) / 500.0) * 500))
+
+    bundling_discount = max(1000, int(round((harga_rekomendasi_ecer * 3 * 0.1) / 500.0) * 500))
+    bundling_price = max(harga_rekomendasi_ecer * 2, (harga_rekomendasi_ecer * 3) - bundling_discount)
+
+    # Optional Live Gemini enrichment
+    prompt = f"""
+Anda adalah AI Business Advisor SatuAkses untuk UMKM Desa.
+Profil UMKM: {nama_pemilik}, Usaha: {nama_usaha} (KBLI {kbli_info['kode']} - {kbli_info['judul']}), Modal: Rp {modal_usaha}.
+Data Buku Kas Hari Ini: Omset Rp {summary['total_pemasukan']}, Pengeluaran Rp {summary['total_pengeluaran']}, Laba Bersih Rp {summary['laba_bersih']} (Margin {summary['margin_persen']}%).
+Pertanyaan UMKM: "{voice_raw}"
+Berikan JSON: {{"ringkasan_saran": "...", "strategi_promosi_wa": "..."}}
+"""
+    gem_advice = call_gemini_multimodal(prompt=prompt)
+    custom_promo = (
+        gem_advice.get("strategi_promosi_wa")
+        if isinstance(gem_advice, dict) and gem_advice.get("strategi_promosi_wa")
+        else (
+            f"🔥 *PROMO {nama_usaha.upper()} FRESH HARI INI!* 🔥\n"
+            f"Renyah, gurih, tanpa bahan pengawet & sudah berizin resmi NIB! "
+            f"Beli 1 bungkus Rp {harga_rekomendasi_ecer:,.0f}, *Paket Hemat 3 Bungkus cuma Rp {bundling_price:,.0f}*! "
+            f"Siap antar sekitar desa. Balas chat ini untuk pesan ya! 🙏".replace(",", ".")
+        )
+    )
+
+    hpp_fmt = f"Rp {hpp_per_unit:,.0f}".replace(",", ".")
+    jual_fmt = f"Rp {harga_jual_unit:,.0f}".replace(",", ".")
+    untung_fmt = f"Rp {untung_per_unit:,.0f}".replace(",", ".")
+    ecer_fmt = f"Rp {harga_rekomendasi_ecer:,.0f}".replace(",", ".")
+    bundling_fmt = f"Rp {bundling_price:,.0f}".replace(",", ".")
+
+    consultation_data = {
+        "topik_konsultasi": "Analisis HPP, Optimasi Margin & Pendampingan Pasca-NIB (Halal/KUR)",
+        "profil_umkm": {
+            "nama_pemilik": nama_pemilik,
+            "nama_usaha": nama_usaha,
+            "kbli": f"{kbli_info['kode']} - {kbli_info['judul']}",
+            "modal_usaha_rp": modal_usaha,
+        },
+        "analisis_hpp": {
+            "estimasi_produksi_harian": f"{estimasi_unit_harian} bungkus/porsi",
+            "hpp_per_unit": hpp_per_unit,
+            "harga_jual_saat_ini": harga_jual_unit,
+            "laba_per_unit": untung_per_unit,
+            "rekomendasi_harga_ecer": harga_rekomendasi_ecer,
+            "rekomendasi_bundling_3pcs": bundling_price,
+        },
+        "rekomendasi_aksi": [
+            f"1. **Patokan HPP Aman:** Dari Buku Kas Anda, modal bahan + kemasan per bungkus adalah **{hpp_fmt}**. Dengan harga jual **{jual_fmt}**, Anda untung bersih **{untung_fmt}/bungkus** (Margin **{summary['margin_persen']}%**).",
+            "2. **Siasati Kenaikan Harga Minyak:** Beli minyak goreng kemasan jerigen 5L di agen grosir (hemat ~12% dibanding beli eceran harian) dan pisahkan uang modal belanja di dompet Tabungan Modal.",
+            f"3. **Strategi Paket Bundling:** Jual paket *3 Bungkus {bundling_fmt}* untuk mempercepat perputaran uang kas harian.",
+            f"4. **Akses KUR & Sertifikat Halal Gratis (SEHATI):** Karena usaha Anda sudah memiliki **NIB ({kbli_info['kode']})** dan **Rekap Buku Kas Digital** di SatuAkses, Anda sudah memenuhi 2 syarat utama pengajuan **Sertifikat Halal Gratis BPJPH** dan **KUR Mikro Bunga 6%/tahun**.",
+        ],
+        "copywriting_wa_story": custom_promo,
+    }
+
+    wa_reply = (
+        f"💡 *KONSULTASI USAHA AI — PENDAMPING UMKM SATUAKSES*\n\n"
+        f"Halo *{nama_pemilik}*, saya sudah menganalisis profil *{nama_usaha}* (*KBLI {kbli_info['kode']}*) beserta *Buku Kas Harian* Anda:\n\n"
+        f"🧮 *1. Bedah HPP & Keuntungan Per Bungkus:*\n"
+        f"• Total Biaya Bahan & Kemasan: Rp {summary['total_pengeluaran']:,.0f} ({estimasi_unit_harian} bks)\n"
+        f"• *HPP (Modal per Bungkus):* *{hpp_fmt}*\n"
+        f"• *Harga Jual Saat Ini:* *{jual_fmt}* (Untung *{untung_fmt}/bks* • Margin *{summary['margin_persen']}%*)\n\n"
+        f"📈 *2. Tiga Langkah Biar Untung Makin Stabil:*\n"
+        f"• *Belanja Grosir Mingguan:* Ambil minyak & plastik per pekan dari uang *Tabungan Modal* agar HPP turun ~Rp 500/bks.\n"
+        f"• *Jual Paket Bundling:* Tawarkan *3 Bungkus {bundling_fmt}* supaya omset harian naik cepat.\n"
+        f"• *Teks Promosi Siap Pakai untuk Status WA:*\n"
+        f"_{custom_promo}_\n\n"
+        f"🏛️ *3. Tindak Lanjut Legalitas & Modal (Pasca-NIB):*\n"
+        f"Karena *NIB* dan *Buku Kas* Anda sudah tercatat rapi di SatuAkses, usaha Anda *SIAP* didaftarkan ke *Sertifikat Halal Gratis (SEHATI)* dan pengajuan *KUR Mikro*!"
+    ).replace(",", ".")
+
+    elapsed = round(time.time() - t0, 2)
+
+    parsed_lang = parse_natural_language_intake(voice_raw).get("bahasa_terdeteksi", "Bahasa Indonesia & Daerah")
+    intake_card = {
+        **prev_intake,
+        "bahasa_terdeteksi": parsed_lang,
+        "terjemahan_formal": f"Konsultasi Bisnis & HPP untuk {nama_usaha} (KBLI {kbli_info['kode']}).",
+        "ktp_terbaca_jelas": True,
+        "nik": prev_intake.get("nik") or "3205124508820003",
+        "nama_lengkap": nama_pemilik,
+        "nama_usaha": nama_usaha,
+        "modal_usaha_rp": str(modal_usaha),
+        "ai_engine": "Gemini 2.5 Flash Business Advisor + Memory Buku Kas",
+    }
+
+    planner_card = {
+        "is_complete": True,
+        "missing_fields": [],
+        "kbli_mapping": kbli_info,
+        "human_approval_required": False,
+        "human_approved": True,
+        "execution_plan": [
+            "1. [ROUTER] Intent terdeteksi: KONSULTASI_USAHA_UMKM",
+            f"2. [MEMORY] Load Profil NIB ({kbli_info['kode']}) + Rekap Buku Kas (Margin {summary['margin_persen']}%)",
+            f"3. [ADVISOR] Hitung HPP ({hpp_fmt}/unit) + Generate Copywriting WA + Cek Kelayakan KUR/Halal",
+            "4. [RETENTION] Tampilkan Analisis & Rekomendasi di Panel Kanan Command Center",
+        ],
+    }
+
+    voice_kb = round(max(14.2, len(voice_raw) * 0.12), 1)
+    reply_kb = 4.8
+    total_kb = round(voice_kb + reply_kb, 1)
+    bandwidth_metrics = {
+        "voice_note_kb": voice_kb,
+        "ktp_compressed_kb": 0.0,
+        "wa_text_reply_kb": reply_kb,
+        "total_satuakses_kb": total_kb,
+        "manual_portal_kb": 4380.0,
+        "savings_percent": round((1.0 - (total_kb / 4380.0)) * 100, 1),
+        "estimated_time_2g_satuakses": "1.8 detik",
+        "estimated_time_2g_manual": "6 menit 40 detik",
+    }
+
+    logs = list(state.get("trace_logs") or [])
+    logs.append({
+        "agent": "Business Advisor Agent",
+        "step": "Contextual HPP Calculation & UMKM Growth Advisory",
+        "timestamp": time.strftime("%H:%M:%S"),
+        "duration_sec": elapsed,
+        "status": "ADVISORY_DELIVERED",
+        "detail": f"Menghitung HPP={hpp_fmt}/unit, Laba={untung_fmt}/unit, strategi bundling, dan kesiapan KUR/Halal untuk {nama_usaha}.",
+    })
+
+    state["intent_mode"] = "business_consultation"
+    state["voice_text_raw"] = voice_raw
+    state["intake_result"] = intake_card
+    state["planner_result"] = planner_card
+    state["bandwidth_metrics"] = bandwidth_metrics
+    state["cashflow_ledger"] = real_ledger
+    state["cashflow_summary"] = summary
+    state["consultation_result"] = consultation_data
+    state["status"] = "CONSULTATION_COMPLETED"
+    state["whatsapp_reply"] = wa_reply
+    state["trace_logs"] = logs
+    return state
+
+
 def run_langgraph_intake_and_plan(initial_state: AgentState) -> AgentState:
+    scenario = initial_state.get("scenario_mode", "happy_path")
+    voice_raw = initial_state.get("voice_text_raw", "")
+    prev_intake = initial_state.get("previous_intake") or {}
+    has_pending_nib = bool(prev_intake and (not prev_intake.get("nama_usaha") or not prev_intake.get("alamat") or not prev_intake.get("modal_usaha_rp")))
+
+    intent = classify_user_intent(voice_raw, scenario_mode=scenario, has_pending_nib_slot=has_pending_nib)
+    initial_state["intent_mode"] = intent
+
+    if intent in ("cashflow_record", "cashflow_query"):
+        return run_cashflow_agent(initial_state)
+    if intent == "business_consultation":
+        return run_consultation_agent(initial_state)
+
     try:
         from langgraph.graph import StateGraph, START, END
 
