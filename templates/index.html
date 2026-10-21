@@ -525,6 +525,25 @@
       } else if (state.status === "WAITING_USER_CLARIFICATION") {
         document.getElementById("clarify-action-bar").classList.remove("hidden");
         document.getElementById("hitl-action-bar").classList.add("hidden");
+
+        const pr = state.planner_result || {};
+        const missing = pr.missing_fields || [];
+        const btnClarify = document.getElementById("btn-clarify-quick");
+        if (btnClarify) {
+          if (missing.some(f => f.includes("NIK") || f.includes("KTP"))) {
+            btnClarify.innerText = "🎙️ Balas Cepat: 'NIK saya 3205129988770001'";
+          } else if (missing.some(f => f.includes("Nama Lengkap"))) {
+            btnClarify.innerText = "🎙️ Balas Cepat: 'Nama saya Ohim'";
+          } else if (missing.some(f => f.includes("Alamat"))) {
+            btnClarify.innerText = "🎙️ Balas Cepat: 'Alamat di Desa Lembang, Kec. Lembang'";
+          } else if (missing.some(f => f.includes("Modal"))) {
+            btnClarify.innerText = "🎙️ Balas Cepat: 'Modal usaha 10jt'";
+          } else if (missing.some(f => f.includes("Nama Usaha"))) {
+            btnClarify.innerText = "🎙️ Balas Cepat: 'Nama usaha Toko Berkah'";
+          } else {
+            btnClarify.innerText = "🎙️ Kirim Data Susulan Otomatis";
+          }
+        }
       } else {
         document.getElementById("hitl-action-bar").classList.add("hidden");
         document.getElementById("clarify-action-bar").classList.add("hidden");
@@ -601,10 +620,23 @@
 
     async function sendFollowUpClarification() {
       if (currentScenarioMode === "custom") {
-        const followUp = "Alamat usaha saya di Desa Lembang, Kec. Lembang, Nama usaha Surabi Notodewe, Modal 10jt";
+        let followUp = "Alamat usaha saya di Desa Lembang, Kec. Lembang.";
+        const btnText = document.getElementById("btn-clarify-quick")?.innerText || "";
+        if (btnText.includes("NIK saya")) {
+          followUp = "NIK saya 3205129988770001";
+        } else if (btnText.includes("Nama saya")) {
+          followUp = "Nama saya Ohim";
+        } else if (btnText.includes("Alamat di")) {
+          followUp = "Alamat usaha saya di Desa Lembang, Kec. Lembang.";
+        } else if (btnText.includes("Modal usaha")) {
+          followUp = "Modal usaha 10jt";
+        } else if (btnText.includes("Nama usaha")) {
+          followUp = "Nama usaha Toko Berkah";
+        }
+
         appendWaBubble("user", `
           <div class="text-[10px] font-bold text-emerald-200">🎙️ Balasan Tambahan (Multi-Turn Slot Filling)</div>
-          <div>"Alamat usaha saya di <strong>Desa Lembang, Kec. Lembang</strong>."</div>
+          <div>"${followUp}"</div>
         `, true);
 
         const formData = new FormData();

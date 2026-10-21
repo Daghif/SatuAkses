@@ -159,4 +159,5 @@ if __name__ == "__main__":
     print(f"[READY] SatuAkses Command Center : http://127.0.0.1:{port}")
     print(f"[READY] Portal NIB Simulasi      : http://127.0.0.1:{port}/portal")
     print("=======================================================\n")
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port)

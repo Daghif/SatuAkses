@@ -15,6 +15,26 @@ load_dotenv()
 # =====================================================================
 KBLI_DATABASE = [
     {
+        "kode": "45101",
+        "judul": "Perdagangan Eceran Mobil Baru & Showroom Supercar / Kendaraan Roda Empat",
+        "kategori": "Perdagangan Otomotif & Kendaraan Bermotor",
+        "risiko": "Rendah (NIB Terbit Instan)",
+        "keywords": [
+            "supercar", "mobil baru", "showroom", "dealer", "jual beli mobil",
+            "jual mobil", "beli mobil", "showroom mobil", "toko mobil", "mobil mewah",
+            "kendaraan bermotor", "otomotif mobil", "dealer mobil",
+        ],
+    },
+    {
+        "kode": "45102",
+        "judul": "Perdagangan Eceran Mobil Bekas (Showroom Mobil Bekas / Mobkas)",
+        "kategori": "Perdagangan Otomotif & Kendaraan Bermotor",
+        "risiko": "Rendah (NIB Terbit Instan)",
+        "keywords": [
+            "mobil bekas", "mobkas", "jual beli mobil bekas", "makelar mobil",
+        ],
+    },
+    {
         "kode": "47414",
         "judul": "Perdagangan Eceran Alat Telekomunikasi (Jual Beli HP, Smartphone, Aksesoris & Pulsa)",
         "kategori": "Perdagangan Elektronik & Telekomunikasi",
@@ -293,21 +313,25 @@ BUSINESS_BOUNDARY = (
     r"(?=\s*(?:;|,?\s*(?:"
     r"modal|modalnya|modalna|dana|dana\s*awal|budget|biaya|sebesar|uang\s*modal|"
     r"omzet|omset|kapasitas|target|volume|"
-    r"alamat|alamatnya|domisili|lokasi|tempat\s*usaha|tempat\s*tinggal|di\s+jalan|di\s+desa|"
+    r"alamat|alamatnya|domisili|lokasi|tempat\s*usaha|tempat\s*tinggal|"
+    r"di\s+jalan|di\s+desa|di\s+kelurahan|di\s+kecamatan|di\s+kota|di\s+|pada\s+|bertempat\s*di|"
     r"nik|no\s*ktp|nomor\s*ktp|ktp|"
     r"no\s*hp|nomor\s*hp|telepon|telp|wa|whatsapp|"
     r"atas\s*nama|a/n|pemohon|pemilik|nama\s*pemilik"
     r")\b|$))"
 )
 
-# 1. Name Patterns (20+ regex variants)
+# 1. Name Patterns (Comprehensive variants)
 NAME_REGEX_PATTERNS = [
-    r"(?:nama\s*lengkap|nama\s*pemohon|nama\s*ktp|pemilik|nama\s*pemilik)\s*[:=]\s*(?:bapak|ibu|pak|bu|kang|teh|mas|mbak|h\.|haji|hajjah)?\s*([A-Za-z0-9\s'\.]{1,35}?)" + NAME_BOUNDARY,
+    r"(?:nama\s*lengkap|nama\s*pemohon|nama\s*ktp|nama\s*pemilik|pemilik)\s*[:=]\s*(?:bapak|ibu|pak|bu|kang|teh|mas|mbak|h\.|haji|hajjah)?\s*([A-Za-z0-9\s'\.]{1,35}?)" + NAME_BOUNDARY,
     r"(?:atas\s*nama|a/n|pemohon|panggil\s*saja|biasa\s*dipanggil)\s*[:=]?\s*(?:bapak|ibu|pak|bu|kang|teh|mas|mbak|bli|cak|bang|h\.|haji)?\s*([A-Za-z][A-Za-z\s'\.]{1,30}?)" + NAME_BOUNDARY,
-    r"(?:saya|abdi|kulo|aku|gue|gw|ane|beta)\s*(?:teh|yaiku|yakni)?\s+(?:bapak|ibu|pak|bu|kang|akang|teh|teteh|mas|mbak|cak|bang|bli|om|tante|kak|kakak|h\.|haji|hajjah)\s+([A-Za-z][A-Za-z\s'\.]{1,30}?)" + NAME_BOUNDARY,
-    r"(?:saya|abdi|kulo|aku|gue|gw|ane|beta)\s+([A-Za-z][A-Za-z\s'\.]{1,30}?)\s+(?:dari|ti|asal|saking|tinggal|warga|domisili|mau|ingin|pengen|bade|hoyong|badhe|arep|bikin|buat|buka|punya|ada)\b",
-    r"^(?:bli|cak|bang|mas|kang|pak|bu)\s+([A-Za-z][A-Za-z\s'\.]{1,25}?)\s+(?:dari|ti|asal|saking|tinggal|mau|bikin|usaha)\b",
     r"(?:nama\s*saya|namaku|namina|nama\s*abdi|jenengku|asmanipun)\s*(?:adalah|teh|yaiku|yakni)?\s*[:=]?\s*(?:bapak|ibu|pak|bu|kang|teh|mas|mbak|cak|bang|bli|om|tante)?\s*([A-Za-z][A-Za-z\s'\.]{1,30}?)" + NAME_BOUNDARY,
+    r"(?:saya|abdi|kulo|aku|gue|gw|ane|beta)\s*(?:teh|yaiku|yakni)?\s+(?:bapak|ibu|pak|bu|kang|akang|teh|teteh|mas|mbak|cak|bang|bli|om|tante|kak|kakak|h\.|haji|hajjah)\s+([A-Za-z][A-Za-z\s'\.]{1,30}?)" + NAME_BOUNDARY,
+    # Comma/punct before preposition: "aku ohim, dari desa konoha..."
+    r"(?:saya|abdi|kulo|aku|gue|gw|ane|beta)\s+([A-Za-z][A-Za-z\s'\.]{1,30}?)[,\s]+(?:dari|ti|asal|saking|tinggal|warga|domisili|mau|ingin|pengen|bade|hoyong|badhe|arep|bikin|buat|buka|punya|ada)\b",
+    # Standalone name utterance: "saya ohim", "aku geraldo", "kulo widodo"
+    r"^(?:saya|aku|abdi|kulo|gue|gw|ane)\s+(?:bapak|ibu|pak|bu|kang|teh|mas|mbak|cak|bang|bli)?\s*([A-Za-z][A-Za-z\s'\.]{1,30}?)(?=[,\.\?!]|$)",
+    r"^(?:bli|cak|bang|mas|kang|pak|bu)\s+([A-Za-z][A-Za-z\s'\.]{1,25}?)\s+(?:dari|ti|asal|saking|tinggal|mau|bikin|usaha)\b",
     r"(?:atas\s*nama|a/n)\s+([A-Za-z][A-Za-z\s'\.]{1,25}?)" + NAME_BOUNDARY,
 ]
 
@@ -318,7 +342,8 @@ BUSINESS_NAME_PATTERNS = [
     r"usaha\s+(?:mikro\s+)?(?:abdi\s+|saya\s+)?(?:bernama\s+|namina\s+|namanya\s+)?['\"]([^'\"]{2,40})['\"]",
     r"['\"]([A-Za-z0-9\s\.\-]{3,35}\b(?:berkah|jaya|makmur|abadi|sejahtera|notodewe|snack|cell|store|shop|food|drink|kopi|coffee|kitchen|bakery|craft|motor|laundry)?)['\"]",
     r"\b((?:toko|warung|kedai|kios|bengkel|konter|counter|salon|laundry|depot|rm|rumah\s*makan|warkop|ud|cv|pt)\s+[A-Za-z0-9\s'\.\-]{2,35}?)" + BUSINESS_BOUNDARY,
-    r"(?:mau\s+bikin\s+usaha|bikin\s+usaha|mau\s+buat\s+usaha|buat\s+usaha|mau\s+buka\s+usaha|buka\s+usaha|buka\s+jasa|runtisan\s*usaha|usaha\s*mikro|mau\s+usaha|usaha)\s+['\"]?([^';\n]+?)['\"]?" + BUSINESS_BOUNDARY,
+    # Negative lookbehind to prevent capturing "alamat usaha", "lokasi usaha", "tempat usaha"
+    r"(?<!(?:alamat|lokasi|tempat)\s)(?:mau\s+bikin\s+usaha|bikin\s+usaha|mau\s+buat\s+usaha|buat\s+usaha|mau\s+buka\s+usaha|buka\s+usaha|buka\s+jasa|runtisan\s*usaha|usaha\s*mikro|mau\s+usaha|usaha)\s+['\"]?([^';\n]+?)['\"]?" + BUSINESS_BOUNDARY,
 ]
 
 # 3. Business Type Patterns (20+ regex variants)
@@ -358,6 +383,7 @@ ADDRESS_PATTERNS = [
 
 # 6. NIK Patterns
 NIK_PATTERNS = [
+    r"(?:nik|no\s*ktp|nomor\s*ktp)\s*(?:saya|abdi|kulo|aku)?\s*[:=]?\s*([\d\s\.\-]{16,22})\b",
     r"(?:nik|no\s*ktp|nomor\s*ktp)\s*[:=]?\s*(\d{4}[\s\.\-]?\d{4}[\s\.\-]?\d{4}[\s\.\-]?\d{4})\b",
     r"\b(\d{16})\b",
 ]
@@ -409,9 +435,18 @@ def parse_natural_language_intake(voice_raw: str, is_followup_turn: bool = False
             ).strip()
             # Clean leading honorifics if already in candidate
             candidate = re.sub(r"^(?:bapak|ibu|pak|bu|kang|teh|mas|mbak|cak|bang|bli)\s+", "", candidate, flags=re.IGNORECASE).strip()
-            if len(candidate) >= 2 and not any(w in candidate.lower() for w in ["usaha", "modal", "jual", "toko", "warung"]):
+            if len(candidate) >= 2 and not any(w in candidate.lower() for w in ["usaha", "modal", "jual", "toko", "warung", "desa", "jalan", "setuju"]):
                 nama_lengkap = candidate.upper()
                 break
+
+    # Fallback for short name utterance (1-3 words, e.g. "ohim", "bapak widodo", "geraldo")
+    if not nama_lengkap and len(text.split()) in (1, 2, 3):
+        cand_short = text.strip(" ,.-'\"")
+        non_name_words = {"setuju", "oke", "ya", "modal", "desa", "jalan", "kecamatan", "kota", "usaha", "rupiah", "juta", "ribu", "rp", "warung", "toko"}
+        if not any(w in cand_short.lower().split() for w in non_name_words) and re.match(r"^[A-Za-z\s'\.]{2,35}$", cand_short):
+            cand_short = re.sub(r"^(?:saya|aku|abdi|kulo|bapak|ibu|pak|bu|kang|teh|mas|mbak)\s+", "", cand_short, flags=re.IGNORECASE).strip()
+            if len(cand_short) >= 2:
+                nama_lengkap = cand_short.upper()
 
     # 2. EXTRACT NAMA USAHA
     nama_usaha = ""
@@ -422,7 +457,11 @@ def parse_natural_language_intake(voice_raw: str, is_followup_turn: bool = False
             cand = re.sub(r"^(?:bikin\s*usaha|buat\s*usaha|buka\s*usaha|buka\s*jasa|usaha\s*mikro|usaha)\s*", "", cand, flags=re.IGNORECASE).strip()
             # Clean trailing prepositions (dengan, dan, di, untuk, etc.)
             cand = re.sub(r"\s+(?:dengan|dan|di|untuk|modal|sebesar|pada)\s*$", "", cand, flags=re.IGNORECASE).strip()
-            if len(cand) >= 2 and not any(w in cand.lower() for w in ["kumaha", "gimana", "modal"]):
+            # Guardrail: Pronouns / locations / prepositions are never business names!
+            bus_stopwords = {"saya", "abdi", "kulo", "aku", "gue", "gw", "kami", "kita", "kamu", "dia", "di", "desa", "jalan", "kumaha", "gimana", "modal", "usaha"}
+            if cand.lower().strip() in bus_stopwords:
+                cand = ""
+            if len(cand) >= 2:
                 nama_usaha = _smart_title_case(cand)
                 break
 
@@ -437,12 +476,15 @@ def parse_natural_language_intake(voice_raw: str, is_followup_turn: bool = False
                 cand = f"Jual Beli {cand}"
             cand = re.sub(r"^(?:izin\s*usaha|nib|usaha\s*mikro|abdi|saya)\s*", "", cand, flags=re.IGNORECASE).strip()
             cand = re.sub(r"\s+(?:dengan|dan|di|untuk|modal|sebesar)\s*$", "", cand, flags=re.IGNORECASE).strip()
+            bus_stopwords = {"saya", "abdi", "kulo", "aku", "gue", "gw", "kami", "kita", "kamu", "dia", "di", "desa", "jalan", "kumaha", "gimana", "modal", "usaha"}
+            if cand.lower().strip() in bus_stopwords:
+                cand = ""
             if len(cand) >= 2:
                 jenis_usaha = _smart_title_case(cand)
                 break
 
     if not nama_usaha and jenis_usaha:
-        if not any(w in jenis_usaha.lower() for w in ["kumaha", "gimana", "di bumi", "di rumah"]):
+        if not any(w in jenis_usaha.lower() for w in ["kumaha", "gimana", "di bumi", "di rumah", "saya", "abdi"]):
             nama_usaha = jenis_usaha
 
     # 4. EXTRACT MODAL USAHA
@@ -498,15 +540,28 @@ def parse_natural_language_intake(voice_raw: str, is_followup_turn: bool = False
                 break
 
     if not alamat:
-        has_business_intent = any(w in text_lower for w in ["mau jual", "bikin usaha", "modal", "namanya", "daftar nib"])
-        if (is_followup_turn and not has_business_intent) or any(
-            k in text_lower for k in ["jl.", "jl ", "jalan", "no.", "rt", "rw", "desa", "kelurahan", "kec.", "kecamatan", "kabupaten", "kota"]
-        ):
-            if not has_business_intent:
-                cleaned_loc = re.sub(r"^(?:alamat(?:nya)?|lokasi(?:nya)?|di|ti|dari|saking|asal)\s*[:=]?\s*", "", text, flags=re.IGNORECASE).strip(" ,.-")
-                if len(cleaned_loc) >= 3:
-                    alamat = cleaned_loc.upper()
-                    desa = alamat
+        # Only treat as address if text contains genuine address keywords or explicit address prefixes
+        is_address_like = any(
+            k in text_lower for k in [
+                "jl.", "jl ", "jalan", "gang", "gg.", "blok", "kav", "no.", "rt", "rw",
+                "desa", "kelurahan", "kec.", "kecamatan", "kabupaten", "kota", "kp.", "kampung", "dusun"
+            ]
+        ) or bool(re.search(r"^(?:alamat|lokasi|tempat|domisili|tinggal\s*di|di\s+desa|di\s+jalan|bertempat\s*di)\b", text_lower))
+
+        if is_address_like:
+            cleaned_loc = re.sub(
+                r"^(?:alamat\s*usaha|alamat\s*lengkap|alamat(?:nya)?|lokasi(?:nya)?|tempat(?:nya)?|di|ti|dari|saking|asal)\s*[:=]?\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            ).strip(" ,.-")
+            # Clean leading pronouns like "usaha saya di" or "saya di"
+            cleaned_loc = re.sub(r"^(?:usaha\s*saya|usaha\s*abdi|usaha|saya|abdi|kulo)\s+(?:di|ti|asal|saking|bertempat\s*di)\s*", "", cleaned_loc, flags=re.IGNORECASE).strip(" ,.-")
+            # Strip trailing non-address clauses
+            cleaned_loc = re.sub(r"\s+(?:nama\s*usaha|modal|dana|sebesar|nik|no\s*hp).*$", "", cleaned_loc, flags=re.IGNORECASE).strip(" ,.-")
+            if len(cleaned_loc) >= 3:
+                alamat = cleaned_loc.upper()
+                desa = alamat
 
     # 6. EXTRACT KAPASITAS
     kapasitas_produksi = ""
@@ -585,7 +640,12 @@ def call_gemini_multimodal(
         except Exception:
             pass
 
-    if api_key.startswith("AQ."):
+    urls = [
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+    ]
+    if False:
         urls = [
             f"https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key={api_key}",
             f"https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key={api_key}",
@@ -606,7 +666,8 @@ def call_gemini_multimodal(
 
     for url in urls:
         try:
-            resp = requests.post(url, json=payload, timeout=4)
+            headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
+            resp = requests.post(url, json=payload, headers=headers, timeout=8)
             if resp.status_code == 200:
                 data = resp.json()
                 candidates = data.get("candidates", [])
@@ -615,7 +676,7 @@ def call_gemini_multimodal(
                     if text:
                         return json.loads(text)
             elif resp.status_code in (401, 403):
-                break
+                continue
         except Exception:
             break
 
@@ -700,31 +761,82 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
         # CUSTOM INPUT / MULTI-TURN CONVERSATION MODE:
         has_custom_ktp = bool(state.get("has_custom_ktp", False) or prev.get("has_custom_ktp", False))
 
-        final_nama = parsed["nama_lengkap"] or prev.get("nama_lengkap") or ""
-        final_usaha = parsed["nama_usaha"] or prev.get("nama_usaha") or ""
-        final_jenis = parsed["jenis_usaha"] or prev.get("jenis_usaha") or final_usaha or ""
-        final_modal = parsed["modal_usaha_rp"] or prev.get("modal_usaha_rp") or ""
+        # Extract structured fields from Gemini Live API (if returned)
+        gem_nama = ""
+        gem_usaha = ""
+        gem_jenis = ""
+        gem_modal = ""
+        gem_alamat = ""
+        gem_desa = ""
+        gem_kec = ""
+        gem_hp = ""
+        gem_nik = ""
 
-        if parsed["alamat"]:
-            final_alamat = parsed["alamat"]
+        if isinstance(gemini_res, dict):
+            if gemini_res.get("nama_lengkap"):
+                cand = str(gemini_res["nama_lengkap"]).strip()
+                if cand.lower() not in ("tidak ada", "none", "null", "belum ada", "pemohon", "bapak/ibu", ""):
+                    gem_nama = cand.upper()
+            if gemini_res.get("nama_usaha"):
+                cand = str(gemini_res["nama_usaha"]).strip()
+                if cand.lower() not in ("tidak ada", "none", "null", "belum ada", "saya", "usaha", ""):
+                    gem_usaha = _smart_title_case(cand)
+            if gemini_res.get("jenis_usaha"):
+                cand = str(gemini_res["jenis_usaha"]).strip()
+                if cand.lower() not in ("tidak ada", "none", "null", "belum ada", "saya", "usaha", ""):
+                    gem_jenis = _smart_title_case(cand)
+            if gemini_res.get("modal_usaha_rp"):
+                cand_m = re.sub(r"[^\d]", "", str(gemini_res["modal_usaha_rp"]))
+                if cand_m and int(cand_m) > 0:
+                    gem_modal = cand_m
+            if gemini_res.get("alamat"):
+                cand = str(gemini_res["alamat"]).strip()
+                if cand.lower() not in ("tidak ada", "none", "null", "belum ada", ""):
+                    gem_alamat = cand.upper()
+            if gemini_res.get("desa"):
+                cand = str(gemini_res["desa"]).strip()
+                if cand.lower() not in ("tidak ada", "none", "null", "belum ada", ""):
+                    gem_desa = cand.upper()
+            if gemini_res.get("kecamatan"):
+                cand = str(gemini_res["kecamatan"]).strip()
+                if cand.lower() not in ("tidak ada", "none", "null", "belum ada", ""):
+                    gem_kec = cand.upper()
+            if gemini_res.get("nomor_hp"):
+                cand = str(gemini_res["nomor_hp"]).strip()
+                if cand.lower() not in ("tidak ada", "none", "null", "belum ada", ""):
+                    gem_hp = cand
+            if gemini_res.get("nik"):
+                cand_nik = re.sub(r"[^\d]", "", str(gemini_res["nik"]))
+                if len(cand_nik) == 16:
+                    gem_nik = cand_nik
+
+        # Priority Hierarchy: Gemini Live -> Regex Parsed -> Session Memory History
+        final_nama = gem_nama or parsed["nama_lengkap"] or prev.get("nama_lengkap") or ""
+        final_usaha = gem_usaha or parsed["nama_usaha"] or gem_jenis or parsed["jenis_usaha"] or prev.get("nama_usaha") or ""
+        final_jenis = gem_jenis or parsed["jenis_usaha"] or gem_usaha or parsed["nama_usaha"] or prev.get("jenis_usaha") or final_usaha or ""
+        final_modal = gem_modal or parsed["modal_usaha_rp"] or prev.get("modal_usaha_rp") or ""
+
+        loc_cand = gem_alamat or parsed["alamat"] or (f"{gem_desa}, {gem_kec}".strip(", ") if gem_desa else "") or parsed["desa"] or ""
+        if loc_cand:
+            final_alamat = loc_cand
         else:
             final_alamat = prev.get("alamat") or ("DESA SUKAMAJU, KEC. CILAWU" if has_custom_ktp else "")
 
-        final_desa = parsed["desa"] or prev.get("desa") or (final_alamat if final_alamat else "")
-        final_kecamatan = parsed["kecamatan"] or prev.get("kecamatan") or ""
+        final_desa = gem_desa or parsed["desa"] or prev.get("desa") or (final_alamat if final_alamat else "")
+        final_kecamatan = gem_kec or parsed["kecamatan"] or prev.get("kecamatan") or ""
         final_kapasitas = parsed["kapasitas_produksi"] or prev.get("kapasitas_produksi") or "100 Unit / Bulan"
-        final_hp = parsed["nomor_hp"] or prev.get("nomor_hp") or "0812-2345-6789"
+        final_hp = gem_hp or parsed["nomor_hp"] or prev.get("nomor_hp") or "0812-2345-6789"
 
-        if parsed["nik"]:
-            final_nik = parsed["nik"]
+        if gem_nik or parsed["nik"]:
+            final_nik = gem_nik or parsed["nik"]
         elif prev.get("nik") and len("".join(c for c in str(prev.get("nik")) if c.isdigit())) == 16:
             final_nik = prev["nik"]
-        elif final_nama:
-            h = hashlib.md5(final_nama.encode("utf-8")).hexdigest()
-            digits = "".join(str(int(c, 16) % 10) for c in h[:10])
-            final_nik = f"320512{digits}"
-        else:
+        elif has_custom_ktp:
             final_nik = "3205124508820003"
+        else:
+            final_nik = ""
+
+        has_valid_nik = bool(final_nik and len("".join(c for c in str(final_nik) if c.isdigit())) == 16)
 
         modal_fmt_str = f"Rp {int(final_modal):,.0f}".replace(",", ".") if final_modal.isdigit() else "belum disebutkan"
         terjemahan_auto = (
@@ -735,7 +847,7 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
         intake_data = {
             "bahasa_terdeteksi": parsed["bahasa_terdeteksi"],
             "terjemahan_formal": terjemahan_auto,
-            "ktp_terbaca_jelas": True,
+            "ktp_terbaca_jelas": has_valid_nik,
             "has_custom_ktp": has_custom_ktp,
             "nik": final_nik,
             "nama_lengkap": final_nama,
@@ -809,7 +921,7 @@ def run_planner_agent(state: AgentState) -> AgentState:
     clean_nik = "".join(c for c in nik_str if c.isdigit())
 
     if not intake.get("ktp_terbaca_jelas", True) or len(clean_nik) != 16:
-        missing_fields.append("NIK 16 Digit (Foto KTP terkena pantulan cahaya/buram pada bagian NIK)")
+        missing_fields.append("Foto KTP Asli atau NIK 16 Digit (Kirimkan foto KTP atau ketik 16 digit NIK Anda)")
     if not intake.get("nama_lengkap"):
         missing_fields.append("Nama Lengkap Pemohon (contoh: 'Saya Geraldo' atau 'Saya Bapak Widodo')")
     if not intake.get("nama_usaha"):
@@ -822,6 +934,8 @@ def run_planner_agent(state: AgentState) -> AgentState:
     elapsed = round(time.time() - t0, 2)
 
     captured_items = []
+    if clean_nik and len(clean_nik) == 16:
+        captured_items.append(f"• *NIK Pemohon:* `{clean_nik}`")
     if intake.get("nama_lengkap"):
         captured_items.append(f"• *Nama Pemohon:* {intake['nama_lengkap']}")
     if intake.get("nama_usaha"):
