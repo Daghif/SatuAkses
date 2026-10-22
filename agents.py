@@ -817,7 +817,20 @@ PENTING: Jangan membuat data palsu. Kosongkan ("") field yang tidak ada di foto 
     elif scenario in ("happy_path", "portal_503"):
         target_image = "static/samples/ktp_ibu_sari.png"
 
-    gemini_res = call_gemini_multimodal(prompt=prompt, image_path=target_image)
+    voice_audio_path = state.get("voice_audio_path", "")
+    audio_bytes = None
+    audio_mime = "audio/wav"
+    if voice_audio_path and os.path.exists(voice_audio_path):
+        with open(voice_audio_path, "rb") as f:
+            audio_bytes = f.read()
+        audio_mime = "audio/webm" if voice_audio_path.lower().endswith(".webm") else "audio/wav"
+
+    gemini_res = call_gemini_multimodal(
+        prompt=prompt,
+        image_path=target_image,
+        audio_bytes=audio_bytes,
+        audio_mime=audio_mime,
+    )
     used_live_gemini = gemini_res is not None
 
     if scenario == "incomplete_data":

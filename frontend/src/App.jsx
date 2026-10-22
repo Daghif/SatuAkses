@@ -153,8 +153,12 @@ export default function App() {
   const [customVoiceText, setCustomVoiceText] = useState('');
   const [customKtpFile, setCustomKtpFile] = useState(null);
   const [isRecordingMic, setIsRecordingMic] = useState(false);
-  const [micStatus, setMicStatus] = useState('Siap merekam via Web Speech API');
+  const [micStatus, setMicStatus] = useState('Siap merekam via mikrofon');
+  const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState('');
   const recognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   // Fetch health check on mount
   useEffect(() => {
@@ -571,70 +575,135 @@ export default function App() {
     }
   };
 
-  // Web Speech API Microphone Recording
-  const toggleMicRecording = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setMicStatus('Browser tidak mendukung Web Speech API, silakan ketik langsung.');
-      return;
-    }
-
-    if (isRecordingMic && recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-      setIsRecordingMic(false);
-      setMicStatus('Rekaman selesai.');
-      return;
-    }
-
-    const rec = new SpeechRecognition();
-    rec.lang = 'id-ID';
-    rec.continuous = false;
-    rec.interimResults = true;
-
-    rec.onstart = () => {
-      setIsRecordingMic(true);
-      setMicStatus('Mendengarkan suara Anda...');
-    };
-    rec.onresult = (event) => {
-      let transcript = '';
-      for (let i = 0; i < event.results.length; i++) {
-        transcript += event.results[i][0].transcript;
+  // Web Speech API + MediaRecorder Recording
+  const toggleMicRecording = async () => {
+    if (isRecordingMic) {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (e) {}
+        recognitionRef.current = null;
       }
-      setCustomVoiceText(transcript);
-    };
-    rec.onerror = () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        try { mediaRecorderRef.current.stop(); } catch (e) {}
+      }
       setIsRecordingMic(false);
-      setMicStatus('Gagal akses mikrofon, silakan ketik teks suara.');
-    };
-    rec.onend = () => {
-      setIsRecordingMic(false);
-      setMicStatus('Transkripsi suara siap dikirim.');
-      recognitionRef.current = null;
-    };
+      setMicStatus('Rekaman selesai. Voice note siap dikirim!');
+      return;
+    }
 
-    recognitionRef.current = rec;
-    rec.start();
+    setRecordedAudioBlob(null);
+    setRecordedAudioUrl('');
+    audioChunksRef.current = [];
+
+    // 1. MediaRecorder (Real Audio Recording)
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mr = new MediaRecorder(stream);
+        mr.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            audioChunksRef.current.push(e.data);
+          }
+        };
+        mr.onstop = () => {
+          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          setRecordedAudioBlob(blob);
+          const url = URL.createObjectURL(blob);
+          setRecordedAudioUrl(url);
+          stream.getTracks().forEach((t) => t.stop());
+        };
+        mr.start();
+        mediaRecorderRef.current = mr;
+      } catch (err) {
+        console.warn('Microphone getUserMedia unavailable:', err);
+      }
+    }
+
+    // 2. Web Speech API (Live Transcription)
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const rec = new SpeechRecognition();
+      rec.lang = 'id-ID';
+      rec.continuous = true;
+      rec.interimResults = true;
+
+      rec.onstart = () => {
+        setIsRecordingMic(true);
+        setMicStatus('Mendengarkan suara Anda...');
+      };
+      rec.onresult = (event) => {
+        let transcript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (transcript.trim()) {
+          setCustomVoiceText(transcript);
+        }
+      };
+      rec.onerror = () => {
+        setMicStatus('Sedang merekam suara mikrofon...');
+      };
+      rec.onend = () => {
+        setIsRecordingMic(false);
+        recognitionRef.current = null;
+      };
+      recognitionRef.current = rec;
+      try {
+        rec.start();
+      } catch (e) {}
+    } else {
+      setIsRecordingMic(true);
+      setMicStatus('Merekam suara mikrofon...');
+    }
   };
 
   const submitCustomModal = async () => {
+    // If currently recording, auto-stop and finalize
+    if (isRecordingMic) {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (e) {}
+        recognitionRef.current = null;
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        try { mediaRecorderRef.current.stop(); } catch (e) {}
+      }
+      setIsRecordingMic(false);
+      setMicStatus('Rekaman selesai.');
+      await new Promise((r) => setTimeout(r, 250));
+    }
+
     const voiceText = customVoiceText.trim();
-    if (!voiceText && !customKtpFile) {
-      alert('Silakan masukkan teks pesan suara (atau rekam suara) atau pilih foto KTP terlebih dahulu.');
+    const hasAudio = Boolean(recordedAudioBlob || audioChunksRef.current.length > 0);
+    const hasKtp = Boolean(customKtpFile);
+
+    if (!voiceText && !hasAudio && !hasKtp) {
+      alert('Silakan rekam suara/ketik pesan atau pilih foto KTP terlebih dahulu.');
       return;
     }
+
     setCustomModalOpen(false);
     const newSid = 'custom-' + Date.now();
     setSessionId(newSid);
     setActiveScenario('custom');
     setIsLoading(true);
 
+    const activeBlob =
+      recordedAudioBlob ||
+      (audioChunksRef.current.length > 0 ? new Blob(audioChunksRef.current, { type: 'audio/webm' }) : null);
+    const activeAudioUrl = recordedAudioUrl || (activeBlob ? URL.createObjectURL(activeBlob) : null);
+
     pushMessage({
       sender: 'user',
-      scenarioTag: 'Input Suara & KTP Kustom',
+      scenarioTag:
+        hasKtp && (voiceText || activeBlob)
+          ? 'Voice Note & Foto KTP Kustom'
+          : hasKtp
+          ? 'Foto KTP Kustom'
+          : 'Voice Note Kustom (Hanya Suara)',
       ktpImage: customKtpFile ? URL.createObjectURL(customKtpFile) : null,
-      ktpCaption: customKtpFile ? `Foto KTP Kustom (${customKtpFile.name})` : null,
-      text: voiceText ? `"${voiceText}"` : null,
+      ktpCaption: customKtpFile ? `Foto KTP (${customKtpFile.name})` : null,
+      audioUrl: activeAudioUrl,
+      audioMeta: activeBlob ? 'Voice Note Kustom (Mikrofon)' : null,
+      text: voiceText ? `"${voiceText}"` : activeBlob ? '[Pesan Suara / Voice Note]' : null,
     });
 
     try {
@@ -646,6 +715,9 @@ export default function App() {
       if (customKtpFile) {
         formData.append('ktp_file', customKtpFile);
       }
+      if (activeBlob) {
+        formData.append('voice_file', activeBlob, 'voicenote.webm');
+      }
 
       const resp = await fetch('/api/agent/intake-plan', { method: 'POST', body: formData });
       const data = await resp.json();
@@ -654,6 +726,9 @@ export default function App() {
       setIsLoading(false);
       setCustomKtpFile(null);
       setCustomVoiceText('');
+      setRecordedAudioBlob(null);
+      setRecordedAudioUrl('');
+      audioChunksRef.current = [];
     }
   };
 
@@ -1758,9 +1833,17 @@ export default function App() {
                     rows={3}
                     value={customVoiceText}
                     onChange={(e) => setCustomVoiceText(e.target.value)}
-                    placeholder="Contoh: Punten Teh, abdi Ibu Sari ti Desa Sukamaju bade daftar NIB usaha Keripik Singkong Berkah, modalna 5 juta..."
+                    placeholder="Ketik transkrip suara di sini atau klik 'Mulai Rekam Suara' di atas..."
                     className="w-full bg-zinc-950 border border-white/10 rounded-xl p-2.5 text-zinc-100 text-xs focus:outline-none focus:border-emerald-500/60"
                   />
+                  {recordedAudioUrl && (
+                    <div className="bg-zinc-900 border border-emerald-500/30 rounded-xl p-2 flex items-center justify-between gap-2 mt-1.5">
+                      <audio controls src={recordedAudioUrl} className="h-7 w-52" />
+                      <span className="text-[10px] font-mono text-emerald-300 font-semibold">
+                        Audio Siap Dikirim ✓
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <div>

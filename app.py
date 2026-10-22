@@ -113,6 +113,7 @@ async def api_intake_and_plan(
     voice_text: str = Form(""),
     simulate_503: str = Form("false"),
     ktp_file: Optional[UploadFile] = File(None),
+    voice_file: Optional[UploadFile] = File(None),
 ):
     """
     Runs Agent 1 (Intake Agent: Gemini Vision OCR via Vertex AI) and
@@ -143,10 +144,20 @@ async def api_intake_and_plan(
     else:
         ktp_path = "static/samples/ktp_ibu_sari.png"
 
+    voice_audio_path = ""
+    if voice_file and voice_file.filename:
+        ext = os.path.splitext(voice_file.filename)[1] or ".webm"
+        v_saved = os.path.join("static", "uploads", f"voice_{session_id}{ext}")
+        v_content = await voice_file.read()
+        with open(v_saved, "wb") as f:
+            f.write(v_content)
+        voice_audio_path = v_saved
+
     initial_state: AgentState = {
         "session_id": session_id,
         "scenario_mode": scenario_mode,
         "voice_text_raw": voice_text,
+        "voice_audio_path": voice_audio_path,
         "ktp_image_path": ktp_path,
         "has_custom_ktp": has_custom_ktp,
         "previous_intake": prev_intake,
