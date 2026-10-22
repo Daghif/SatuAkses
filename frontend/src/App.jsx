@@ -618,9 +618,11 @@ export default function App() {
   };
 
   const submitCustomModal = async () => {
-    const voiceText =
-      customVoiceText.trim() ||
-      'Saya Bapak Widodo dari Desa Lembang, mau daftar NIB jual surabi namanya Surabi Notodewe, modal 10jt';
+    const voiceText = customVoiceText.trim();
+    if (!voiceText && !customKtpFile) {
+      alert('Silakan masukkan teks pesan suara (atau rekam suara) atau pilih foto KTP terlebih dahulu.');
+      return;
+    }
     setCustomModalOpen(false);
     const newSid = 'custom-' + Date.now();
     setSessionId(newSid);
@@ -630,7 +632,9 @@ export default function App() {
     pushMessage({
       sender: 'user',
       scenarioTag: 'Input Suara & KTP Kustom',
-      text: `"${voiceText}"`,
+      ktpImage: customKtpFile ? URL.createObjectURL(customKtpFile) : null,
+      ktpCaption: customKtpFile ? `Foto KTP Kustom (${customKtpFile.name})` : null,
+      text: voiceText ? `"${voiceText}"` : null,
     });
 
     try {
@@ -649,6 +653,7 @@ export default function App() {
     } finally {
       setIsLoading(false);
       setCustomKtpFile(null);
+      setCustomVoiceText('');
     }
   };
 
@@ -1721,20 +1726,33 @@ export default function App() {
                   <label className="block font-semibold text-zinc-300 mb-1.5">
                     1. Rekam Suara via Mikrofon atau Ketik Transkrip Bahasa Daerah/Indonesia
                   </label>
-                  <div className="flex items-center gap-2 mb-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={toggleMicRecording}
+                        className={`px-3 py-1.5 rounded-xl font-semibold flex items-center gap-1.5 transition ${
+                          isRecordingMic
+                            ? 'bg-rose-600 text-white animate-pulse'
+                            : 'bg-white/10 hover:bg-white/15 text-zinc-100 border border-white/10'
+                        }`}
+                      >
+                        <Mic className="w-3.5 h-3.5 text-rose-400" />
+                        <span>{isRecordingMic ? 'Berhenti Merekam' : 'Mulai Rekam Suara'}</span>
+                      </button>
+                      <span className="text-[11px] font-mono text-zinc-400">{micStatus}</span>
+                    </div>
                     <button
                       type="button"
-                      onClick={toggleMicRecording}
-                      className={`px-3 py-1.5 rounded-xl font-semibold flex items-center gap-1.5 transition ${
-                        isRecordingMic
-                          ? 'bg-rose-600 text-white animate-pulse'
-                          : 'bg-white/10 hover:bg-white/15 text-zinc-100 border border-white/10'
-                      }`}
+                      onClick={() =>
+                        setCustomVoiceText(
+                          'Punten Teh, abdi Pak Wahyu ti Desa Cibodas bade daftar NIB usaha Bengkel Motor Wahyu Jaya, modalna 15 juta'
+                        )
+                      }
+                      className="text-[11px] font-mono text-emerald-400 hover:text-emerald-300 underline"
                     >
-                      <Mic className="w-3.5 h-3.5 text-rose-400" />
-                      <span>{isRecordingMic ? 'Berhenti Merekam' : 'Mulai Rekam Suara'}</span>
+                      + Isi Contoh Suara
                     </button>
-                    <span className="text-[11px] font-mono text-zinc-400">{micStatus}</span>
                   </div>
                   <textarea
                     rows={3}

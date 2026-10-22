@@ -896,19 +896,17 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
         if loc_cand:
             final_alamat = loc_cand
         else:
-            final_alamat = prev.get("alamat") or ("DESA SUKAMAJU, KEC. CILAWU" if has_custom_ktp else "")
+            final_alamat = prev.get("alamat") or ""
 
         final_desa = gem_desa or parsed["desa"] or prev.get("desa") or (final_alamat if final_alamat else "")
         final_kecamatan = gem_kec or parsed["kecamatan"] or prev.get("kecamatan") or ""
-        final_kapasitas = parsed["kapasitas_produksi"] or prev.get("kapasitas_produksi") or "100 Unit / Bulan"
-        final_hp = gem_hp or parsed["nomor_hp"] or prev.get("nomor_hp") or "0812-2345-6789"
+        final_kapasitas = parsed["kapasitas_produksi"] or prev.get("kapasitas_produksi") or ""
+        final_hp = gem_hp or parsed["nomor_hp"] or prev.get("nomor_hp") or ""
 
         if gem_nik or parsed["nik"]:
             final_nik = gem_nik or parsed["nik"]
         elif prev.get("nik") and len("".join(c for c in str(prev.get("nik")) if c.isdigit())) == 16:
             final_nik = prev["nik"]
-        elif has_custom_ktp:
-            final_nik = "3205124508820003"
         else:
             final_nik = ""
 
@@ -933,7 +931,7 @@ Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
             "has_custom_ktp": has_custom_ktp,
             "nik": final_nik,
             "nama_lengkap": final_nama,
-            "ttl": g.get("ttl") or "INDONESIA, 05-08-1988",
+            "ttl": g.get("ttl") or prev.get("ttl") or "",
             "alamat": final_alamat,
             "desa": final_desa,
             "kecamatan": final_kecamatan,
@@ -1005,13 +1003,13 @@ def run_planner_agent(state: AgentState) -> AgentState:
     if not intake.get("ktp_terbaca_jelas", True) or len(clean_nik) != 16:
         missing_fields.append("Foto KTP Asli atau NIK 16 Digit (Kirimkan foto KTP atau ketik 16 digit NIK Anda)")
     if not intake.get("nama_lengkap"):
-        missing_fields.append("Nama Lengkap Pemohon (contoh: 'Saya Geraldo' atau 'Saya Bapak Widodo')")
+        missing_fields.append("Nama Lengkap Pemohon (contoh: 'Nama saya Budi Santoso')")
     if not intake.get("nama_usaha"):
-        missing_fields.append("Nama Usaha / Jenis Usaha (contoh: 'Usaha Jual Beli HP' atau 'Namanya Surabi Notodewe')")
+        missing_fields.append("Nama Usaha / Merk Dagang (contoh: 'Nama usaha Warung Berkah')")
     if not intake.get("modal_usaha_rp"):
-        missing_fields.append("Perkiraan Modal Usaha (contoh: 'Modal 10jt')")
+        missing_fields.append("Perkiraan Modal Usaha (contoh: 'Modal 5 juta')")
     if not intake.get("alamat") and not intake.get("desa"):
-        missing_fields.append("Alamat / Desa Lokasi Usaha (contoh: 'Jl. Slamet Riyadi No.116, Bondalem, Gayam')")
+        missing_fields.append("Alamat / Desa Lokasi Usaha (contoh: 'Desa Sukamaju, Kec. Cilawu')")
 
     elapsed = round(time.time() - t0, 2)
 
@@ -1360,7 +1358,11 @@ def classify_user_intent(
         return "nib_registration"
 
     # Explicit NIB keywords always route to NIB registration
-    if any(k in t_low for k in ["daftar nib", "bikin nib", "izin usaha nib", "urus nib", "nomor induk berusaha", "nik saya"]):
+    if any(k in t_low for k in [
+        "nib", "izin usaha", "buat izin", "bikin izin", "ngadamel izin", "urus izin",
+        "perizinan", "legalitas", "nomor induk berusaha", "nik saya", "daftar usaha",
+        "bikin usaha", "buka usaha", "daftar nib", "bikin nib", "urus nib"
+    ]):
         return "nib_registration"
 
     # If user is in the middle of completing missing NIB slots (and not explicitly asking consultation/cashflow)
