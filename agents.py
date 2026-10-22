@@ -738,9 +738,18 @@ def run_intake_agent(state: AgentState) -> AgentState:
     t0 = time.time()
     scenario = state.get("scenario_mode", "happy_path")
     voice_raw = state.get("voice_text_raw", "").strip()
-    ktp_path = state.get("ktp_image_path", "static/samples/ktp_ibu_sari.png")
+    ktp_path = state.get("ktp_image_path", "")
+    if not ktp_path:
+        if scenario in ("happy_path", "portal_503"):
+            ktp_path = "static/samples/ktp_ibu_sari.png"
+        elif scenario == "incomplete_data":
+            ktp_path = "static/samples/ktp_buram.png"
+        else:
+            ktp_path = ""
     prev = state.get("previous_intake") or {}
     is_followup = bool(prev)
+
+    has_custom_ktp = bool(state.get("has_custom_ktp", False) or prev.get("has_custom_ktp", False))
 
     if not voice_raw:
         if scenario == "incomplete_data":
@@ -748,25 +757,67 @@ def run_intake_agent(state: AgentState) -> AgentState:
                 "Punten Kang, abdi Pak Asep ti Desa Mekarsari. Hoyong ngadamel izin usaha NIB "
                 "kanggo warung kelontong di bumi, kumaha nya carana?"
             )
-        else:
+        elif scenario in ("happy_path", "portal_503"):
             voice_raw = (
                 "Assalamualaikum Teh, punten abdi Ibu Sari Wulandari ti Desa Sukamaju Cilawu Garut. "
                 "Bade nyuhunkeun tulung didaftarkeun NIB usaha mikro abdi namina 'Keripik Singkong Berkah', "
                 "modalna teh sakitar 5 juta rupiah, produksi rata-rata 250 bungkus sasasih, "
                 "nomer WA abdi 0812-2345-6789. Hatur nuhun pisan."
             )
+        else:
+            voice_raw = ""
 
     parsed = parse_natural_language_intake(voice_raw, is_followup_turn=is_followup)
 
     prompt = f"""
 Anda adalah Intake Agent dari sistem SatuAkses.
-Analisis pesan pengguna berikut: "{voice_raw}"
-Data sebelumnya di memori sesi: {json.dumps(prev, ensure_ascii=False)}
-Ekstrak ke JSON: bahasa_terdeteksi, terjemahan_formal, ktp_terbaca_jelas, nik, nama_lengkap, ttl, alamat, desa, kecamatan, nama_usaha, jenis_usaha, modal_usaha_rp, kapasitas_produksi, nomor_hp.
-Kosongkan ("") field yang memang belum disebutkan sama sekali oleh pengguna.
+Tugas Anda:
+1. Jika ada lampiran gambar foto KTP, lakukan OCR dan ekstrak data KTP secara akurat:
+   - nik (16 digit angka)
+   - nama_lengkap (nama sesuai KTP)
+   - ttl (tempat dan tanggal lahir)
+   - alamat (alamat domisili lengkap)
+   - desa (kelurahan/desa)
+   - kecamatan (kecamatan)
+   - ktp_terbaca_jelas (true jika NIK dan nama terbaca jelas, false jika buram/gelap/terpotong)
+2. Analisis pesan suara / teks pengguna berikut: "{voice_raw}"
+   - nama_usaha (nama atau merk usaha)
+   - jenis_usaha (bidang usaha)
+   - modal_usaha_rp (angka nominal modal dalam rupiah, contoh: 5000000)
+   - kapasitas_produksi (contoh: 100 bungkus/bulan)
+   - nomor_hp (nomor kontak jika ada)
+3. Data sebelumnya di memori sesi: {json.dumps(prev, ensure_ascii=False)}
+
+Kembalikan dalam format JSON terstruktur:
+{{
+  "bahasa_terdeteksi": "...",
+  "terjemahan_formal": "...",
+  "ktp_terbaca_jelas": true/false,
+  "nik": "...",
+  "nama_lengkap": "...",
+  "ttl": "...",
+  "alamat": "...",
+  "desa": "...",
+  "kecamatan": "...",
+  "nama_usaha": "...",
+  "jenis_usaha": "...",
+  "modal_usaha_rp": "...",
+  "kapasitas_produksi": "...",
+  "nomor_hp": "..."
+}}
+PENTING: Jangan membuat data palsu. Kosongkan ("") field yang tidak ada di foto KTP atau tidak disebutkan oleh pengguna.
 """
 
-    gemini_res = call_gemini_multimodal(prompt=prompt, image_path=ktp_path if scenario != "custom" else None)
+    target_image = None
+    if scenario == "custom":
+        if has_custom_ktp and ktp_path and os.path.exists(ktp_path):
+            target_image = ktp_path
+    elif scenario == "incomplete_data":
+        target_image = "static/samples/ktp_buram.png"
+    elif scenario in ("happy_path", "portal_503"):
+        target_image = "static/samples/ktp_ibu_sari.png"
+
+    gemini_res = call_gemini_multimodal(prompt=prompt, image_path=target_image)
     used_live_gemini = gemini_res is not None
 
     if scenario == "incomplete_data":

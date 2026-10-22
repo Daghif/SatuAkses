@@ -118,6 +118,14 @@ async def api_intake_and_plan(
     Runs Agent 1 (Intake Agent: Gemini Vision OCR via Vertex AI) and
     Agent 2 (Planner Agent: KBLI Tool Lookup + Schema Validation + Human-in-the-Loop Gate).
     """
+    existing_state = SESSIONS.get(session_id, {})
+    keep_memory = scenario_mode in ("custom", "catat_kas", "konsultasi_usaha")
+    prev_intake = existing_state.get("intake_result", {}) if keep_memory else {}
+    prev_logs = existing_state.get("trace_logs", []) if keep_memory else []
+    prev_ledger = existing_state.get("cashflow_ledger", []) if keep_memory else []
+    prev_summary = existing_state.get("cashflow_summary", {}) if keep_memory else {}
+    prev_consult = existing_state.get("consultation_result", {}) if keep_memory else {}
+
     has_custom_ktp = False
     if ktp_file and ktp_file.filename:
         ext = os.path.splitext(ktp_file.filename)[1] or ".png"
@@ -127,20 +135,13 @@ async def api_intake_and_plan(
             f.write(content)
         ktp_path = saved_path
         has_custom_ktp = True
+    elif scenario_mode == "custom":
+        ktp_path = existing_state.get("ktp_image_path", "")
+        has_custom_ktp = bool(existing_state.get("has_custom_ktp", False) or ktp_path)
+    elif scenario_mode == "incomplete_data":
+        ktp_path = "static/samples/ktp_buram.png"
     else:
-        ktp_path = (
-            "static/samples/ktp_buram.png"
-            if scenario_mode == "incomplete_data"
-            else "static/samples/ktp_ibu_sari.png"
-        )
-
-    existing_state = SESSIONS.get(session_id, {})
-    keep_memory = scenario_mode in ("custom", "catat_kas", "konsultasi_usaha")
-    prev_intake = existing_state.get("intake_result", {}) if keep_memory else {}
-    prev_logs = existing_state.get("trace_logs", []) if keep_memory else []
-    prev_ledger = existing_state.get("cashflow_ledger", []) if keep_memory else []
-    prev_summary = existing_state.get("cashflow_summary", {}) if keep_memory else {}
-    prev_consult = existing_state.get("consultation_result", {}) if keep_memory else {}
+        ktp_path = "static/samples/ktp_ibu_sari.png"
 
     initial_state: AgentState = {
         "session_id": session_id,
