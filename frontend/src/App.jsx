@@ -30,6 +30,7 @@ import {
   Zap,
   Eye,
   Maximize2,
+  Loader2,
 } from 'lucide-react';
 import AgentFlowCanvas from './components/AgentFlowCanvas';
 
@@ -156,9 +157,18 @@ export default function App() {
   const [micStatus, setMicStatus] = useState('Siap merekam via mikrofon');
   const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState('');
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const [micVolume, setMicVolume] = useState(0);
+  const [isTranscribingAudio, setIsTranscribingAudio] = useState(false);
+  const [micError, setMicError] = useState('');
+
   const recognitionRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const audioContextRef = useRef(null);
+  const animFrameRef = useRef(null);
+  const recordTimerRef = useRef(null);
+  const streamRef = useRef(null);
 
   // Fetch health check on mount
   useEffect(() => {
@@ -575,100 +585,205 @@ export default function App() {
     }
   };
 
-  // Web Speech API + MediaRecorder Recording
+  // Helper to format recording timer mm:ss
+  const formatRecordTime = (totalSec) => {
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  // Stop all active microphone recording streams & analysers
+  const stopRecordingResources = () => {
+    if (recordTimerRef.current) {
+      clearInterval(recordTimerRef.current);
+      recordTimerRef.current = null;
+    }
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      try {
+        audioContextRef.current.close();
+      } catch (e) {}
+      audioContextRef.current = null;
+    }
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      } catch (e) {}
+      streamRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) {}
+      recognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      try { mediaRecorderRef.current.stop(); } catch (e) {}
+    }
+    setIsRecordingMic(false);
+    setMicVolume(0);
+  };
+
+  // Real-time MediaRecorder + AudioContext Analyser + Gemini AI Auto-Transcribe
   const toggleMicRecording = async () => {
     if (isRecordingMic) {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
-        recognitionRef.current = null;
-      }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        try { mediaRecorderRef.current.stop(); } catch (e) {}
-      }
-      setIsRecordingMic(false);
-      setMicStatus('Rekaman selesai. Voice note siap dikirim!');
+      stopRecordingResources();
+      setMicStatus('Rekaman selesai. Sedang memproses...');
       return;
     }
 
+    setMicError('');
     setRecordedAudioBlob(null);
     setRecordedAudioUrl('');
     audioChunksRef.current = [];
 
-    // 1. MediaRecorder (Real Audio Recording)
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mr = new MediaRecorder(stream);
-        mr.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) {
-            audioChunksRef.current.push(e.data);
-          }
-        };
-        mr.onstop = () => {
-          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          setRecordedAudioBlob(blob);
-          const url = URL.createObjectURL(blob);
-          setRecordedAudioUrl(url);
-          stream.getTracks().forEach((t) => t.stop());
-        };
-        mr.start();
-        mediaRecorderRef.current = mr;
-      } catch (err) {
-        console.warn('Microphone getUserMedia unavailable:', err);
-      }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMicError('Browser Anda tidak mendukung perekaman audio mikrofon (getUserMedia).');
+      return;
     }
 
-    // 2. Web Speech API (Live Transcription)
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+    } catch (err) {
+      console.error('Microphone access denied or error:', err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setMicError('Izin mikrofon ditolak! Klik ikon gembok di sebelah kiri alamat web (URL bar) browser Anda, lalu izinkan Mikrofon.');
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setMicError('Perangkat mikrofon tidak ditemukan. Pastikan headset atau mikrofon terhubung.');
+      } else {
+        setMicError(`Gagal mengakses mikrofon: ${err.message || err.name}`);
+      }
+      setIsRecordingMic(false);
+      return;
+    }
+
+    // AudioContext Live Volume Meter
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const actx = new AudioCtx();
+      audioContextRef.current = actx;
+      const src = actx.createMediaStreamSource(stream);
+      const analyser = actx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      const dataArr = new Uint8Array(analyser.frequencyBinCount);
+
+      const checkVolume = () => {
+        analyser.getByteFrequencyData(dataArr);
+        let sum = 0;
+        for (let i = 0; i < dataArr.length; i++) {
+          sum += dataArr[i];
+        }
+        const avg = sum / dataArr.length;
+        const volPct = Math.min(100, Math.round((avg / 120) * 100));
+        setMicVolume(volPct);
+        animFrameRef.current = requestAnimationFrame(checkVolume);
+      };
+      checkVolume();
+    } catch (e) {
+      console.warn('AudioContext volume meter warning:', e);
+    }
+
+    // MediaRecorder setup
+    try {
+      let mimeType = '';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+          mimeType = 'audio/webm';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+          mimeType = 'audio/ogg;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        }
+      }
+
+      const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      mr.onstop = async () => {
+        const finalType = mr.mimeType || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: finalType });
+        setRecordedAudioBlob(blob);
+        const url = URL.createObjectURL(blob);
+        setRecordedAudioUrl(url);
+
+        const kb = (blob.size / 1024).toFixed(1);
+        setMicStatus(`Rekaman tersimpan (${kb} KB) ✓`);
+
+        // Trigger Gemini 2.5 Flash transcription
+        try {
+          setIsTranscribingAudio(true);
+          const fd = new FormData();
+          fd.append('audio_file', blob, 'voicenote.webm');
+          const r = await fetch('/api/transcribe-audio', { method: 'POST', body: fd });
+          const d = await r.json();
+          if (d.ok && d.text) {
+            setCustomVoiceText(d.text);
+            setMicStatus(`Transkripsi AI Gemini sukses (${kb} KB) ✓`);
+          }
+        } catch (transErr) {
+          console.warn('AI Transcribe warning:', transErr);
+        } finally {
+          setIsTranscribingAudio(false);
+        }
+      };
+
+      mr.start(200); // 200ms slice
+      mediaRecorderRef.current = mr;
+    } catch (mrErr) {
+      console.error('MediaRecorder error:', mrErr);
+      setMicError(`MediaRecorder gagal: ${mrErr.message || mrErr}`);
+    }
+
+    // Web Speech API as live assist
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
-      const rec = new SpeechRecognition();
-      rec.lang = 'id-ID';
-      rec.continuous = true;
-      rec.interimResults = true;
-
-      rec.onstart = () => {
-        setIsRecordingMic(true);
-        setMicStatus('Mendengarkan suara Anda...');
-      };
-      rec.onresult = (event) => {
-        let transcript = '';
-        for (let i = 0; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
-        }
-        if (transcript.trim()) {
-          setCustomVoiceText(transcript);
-        }
-      };
-      rec.onerror = () => {
-        setMicStatus('Sedang merekam suara mikrofon...');
-      };
-      rec.onend = () => {
-        setIsRecordingMic(false);
-        recognitionRef.current = null;
-      };
-      recognitionRef.current = rec;
       try {
+        const rec = new SpeechRecognition();
+        rec.lang = 'id-ID';
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.onresult = (event) => {
+          let transcript = '';
+          for (let i = 0; i < event.results.length; i++) {
+            transcript += event.results[i][0].transcript;
+          }
+          if (transcript.trim()) {
+            setCustomVoiceText(transcript);
+          }
+        };
+        rec.onerror = () => {};
         rec.start();
+        recognitionRef.current = rec;
       } catch (e) {}
-    } else {
-      setIsRecordingMic(true);
-      setMicStatus('Merekam suara mikrofon...');
     }
+
+    setRecordSeconds(0);
+    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+    recordTimerRef.current = setInterval(() => {
+      setRecordSeconds((s) => s + 1);
+    }, 1000);
+
+    setIsRecordingMic(true);
+    setMicStatus('Merekam suara... Bicaralah sekarang');
   };
 
   const submitCustomModal = async () => {
     // If currently recording, auto-stop and finalize
     if (isRecordingMic) {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
-        recognitionRef.current = null;
-      }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        try { mediaRecorderRef.current.stop(); } catch (e) {}
-      }
-      setIsRecordingMic(false);
-      setMicStatus('Rekaman selesai.');
-      await new Promise((r) => setTimeout(r, 250));
+      stopRecordingResources();
+      await new Promise((r) => setTimeout(r, 350));
     }
 
     const voiceText = customVoiceText.trim();
@@ -702,8 +817,8 @@ export default function App() {
       ktpImage: customKtpFile ? URL.createObjectURL(customKtpFile) : null,
       ktpCaption: customKtpFile ? `Foto KTP (${customKtpFile.name})` : null,
       audioUrl: activeAudioUrl,
-      audioMeta: activeBlob ? 'Voice Note Kustom (Mikrofon)' : null,
-      text: voiceText ? `"${voiceText}"` : activeBlob ? '[Pesan Suara / Voice Note]' : null,
+      audioMeta: activeBlob ? `Voice Note Kustom (${(activeBlob.size / 1024).toFixed(1)} KB)` : null,
+      text: voiceText ? `"${voiceText}"` : activeBlob ? '[Pesan Suara / Voice Note Mikrofon]' : null,
     });
 
     try {
@@ -728,6 +843,9 @@ export default function App() {
       setCustomVoiceText('');
       setRecordedAudioBlob(null);
       setRecordedAudioUrl('');
+      setMicVolume(0);
+      setRecordSeconds(0);
+      setMicError('');
       audioChunksRef.current = [];
     }
   };
@@ -1084,12 +1202,20 @@ export default function App() {
 
           {/* WhatsApp Chat Input Footer */}
           <div className="bg-[#14191f] p-2.5 flex items-center gap-2 border-t border-white/[0.07]">
+            <button
+              type="button"
+              onClick={() => setCustomModalOpen(true)}
+              title="Buka Perekam Suara & Upload KTP Kustom"
+              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-emerald-400 border border-white/10 transition shrink-0 flex items-center justify-center"
+            >
+              <Mic className="w-4 h-4" />
+            </button>
             <input
               type="text"
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleManualChatSend()}
-              placeholder="Ketik 'SETUJU', 'rekap buku kas', atau pesan suara..."
+              placeholder="Ketik 'SETUJU', 'rekap buku kas', atau klik ikon mic..."
               className="flex-1 bg-zinc-900/90 border border-white/10 text-zinc-100 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-500/60"
             />
             <button
@@ -1797,25 +1923,51 @@ export default function App() {
               </div>
 
               <div className="space-y-3 text-xs">
+                {micError && (
+                  <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div className="leading-relaxed">
+                      <span className="font-bold">Akses Mikrofon Bermasalah:</span> {micError}
+                    </div>
+                  </div>
+                )}
+
                 <div>
                   <label className="block font-semibold text-zinc-300 mb-1.5">
                     1. Rekam Suara via Mikrofon atau Ketik Transkrip Bahasa Daerah/Indonesia
                   </label>
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2 p-2.5 rounded-xl bg-zinc-950/80 border border-white/10">
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={toggleMicRecording}
-                        className={`px-3 py-1.5 rounded-xl font-semibold flex items-center gap-1.5 transition ${
+                        className={`px-3 py-1.5 rounded-xl font-semibold flex items-center gap-1.5 text-xs transition shadow-sm ${
                           isRecordingMic
-                            ? 'bg-rose-600 text-white animate-pulse'
-                            : 'bg-white/10 hover:bg-white/15 text-zinc-100 border border-white/10'
+                            ? 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse'
+                            : 'bg-emerald-600 hover:bg-emerald-500 text-white'
                         }`}
                       >
-                        <Mic className="w-3.5 h-3.5 text-rose-400" />
-                        <span>{isRecordingMic ? 'Berhenti Merekam' : 'Mulai Rekam Suara'}</span>
+                        <Mic className={`w-3.5 h-3.5 ${isRecordingMic ? 'animate-bounce text-white' : 'text-emerald-100'}`} />
+                        <span>{isRecordingMic ? `Berhenti Merekam (${formatRecordTime(recordSeconds)})` : 'Mulai Rekam Suara'}</span>
                       </button>
-                      <span className="text-[11px] font-mono text-zinc-400">{micStatus}</span>
+
+                      {isRecordingMic && (
+                        <div className="flex items-center gap-2">
+                          <div className="w-20 h-2 bg-zinc-800 rounded-full overflow-hidden border border-white/10">
+                            <div
+                              className="h-full bg-gradient-to-r from-emerald-500 via-teal-400 to-rose-400 transition-all duration-75"
+                              style={{ width: `${Math.max(8, micVolume)}%` }}
+                            />
+                          </div>
+                          <span className="text-[10px] font-mono text-emerald-400 font-bold">
+                            {micVolume > 5 ? 'Terdeteksi Suara 🎙️' : 'Mendengarkan...'}
+                          </span>
+                        </div>
+                      )}
+
+                      {!isRecordingMic && (
+                        <span className="text-[11px] font-mono text-zinc-400">{micStatus}</span>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1829,18 +1981,29 @@ export default function App() {
                       + Isi Contoh Suara
                     </button>
                   </div>
+
+                  {isTranscribingAudio && (
+                    <div className="mb-2 p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[11px] flex items-center gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                      <span>Gemini 2.5 Flash sedang mentranskripsikan suara Anda ke teks secara otomatis...</span>
+                    </div>
+                  )}
+
                   <textarea
                     rows={3}
                     value={customVoiceText}
                     onChange={(e) => setCustomVoiceText(e.target.value)}
-                    placeholder="Ketik transkrip suara di sini atau klik 'Mulai Rekam Suara' di atas..."
+                    placeholder="Transkrip otomatis suara Anda akan muncul di sini (atau ketik langsung)..."
                     className="w-full bg-zinc-950 border border-white/10 rounded-xl p-2.5 text-zinc-100 text-xs focus:outline-none focus:border-emerald-500/60"
                   />
                   {recordedAudioUrl && (
-                    <div className="bg-zinc-900 border border-emerald-500/30 rounded-xl p-2 flex items-center justify-between gap-2 mt-1.5">
-                      <audio controls src={recordedAudioUrl} className="h-7 w-52" />
-                      <span className="text-[10px] font-mono text-emerald-300 font-semibold">
-                        Audio Siap Dikirim ✓
+                    <div className="bg-zinc-900 border border-emerald-500/30 rounded-xl p-2.5 flex items-center justify-between gap-3 mt-1.5">
+                      <div className="flex items-center gap-2">
+                        <Volume2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <audio controls src={recordedAudioUrl} className="h-7 w-56" />
+                      </div>
+                      <span className="text-[10px] font-mono text-emerald-300 font-semibold px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30">
+                        Audio Siap Diputar &amp; Dikirim ✓
                       </span>
                     </div>
                   )}

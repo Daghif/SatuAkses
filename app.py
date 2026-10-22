@@ -106,6 +106,42 @@ async def health_check():
     })
 
 
+@app.post("/api/transcribe-audio")
+async def api_transcribe_audio(audio_file: UploadFile = File(...)):
+    """Transcribes raw microphone voice note using Gemini 2.5 Flash Multimodal Audio."""
+    try:
+        content = await audio_file.read()
+        mime = audio_file.content_type or "audio/webm"
+        if not mime or mime == "application/octet-stream":
+            mime = "audio/webm"
+        
+        prompt = (
+            "Dengarkan rekaman suara pengguna berikut ini dengan saksama. "
+            "Transkripsikan seluruh isi ucapannya secara akurat ke dalam teks tertulis (baik dalam Bahasa Sunda, Jawa, atau Indonesia). "
+            "KEMBALIKAN HANYA TEKS HASIL TRANSKRIPSI SAJA, tanpa tanda kutip, tanpa pengantar, dan tanpa komentar tambahan."
+        )
+        
+        from agents import _get_genai_client
+        from google.genai import types as genai_types
+        client, mode = _get_genai_client()
+        if client:
+            parts = [
+                genai_types.Part.from_text(text=prompt),
+                genai_types.Part.from_bytes(data=content, mime_type=mime)
+            ]
+            resp = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=parts,
+                config=genai_types.GenerateContentConfig(temperature=0.1)
+            )
+            raw = (resp.text or "").strip()
+            logger.info("[Transcribe] Live Gemini audio transcription success (%d chars)", len(raw))
+            return JSONResponse({"ok": True, "text": raw})
+    except Exception as e:
+        logger.error("[Transcribe] Gemini transcription failed: %s", e)
+    return JSONResponse({"ok": False, "text": ""})
+
+
 @app.post("/api/agent/intake-plan")
 async def api_intake_and_plan(
     session_id: str = Form("default-session"),
